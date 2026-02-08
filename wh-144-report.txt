@@ -1,0 +1,61 @@
+# William Hill 1.44 Odds Analysis Report
+
+## Overview
+Analysis of 94 matches where William Hill's final odds for a Home Win were exactly **1.44**.
+
+## Key Findings
+
+### 1. Overall Performance
+*   **Total Matches:** 94
+*   **Home Wins:** 78 (82.98%)
+*   **Draws:** 8 (8.51%)
+*   **Away Wins:** 8 (8.51%)
+
+**Conclusion:** The 1.44 odd from William Hill is a historically strong indicator of a Home Win.
+
+### 2. League Breakdown
+Performance varies significantly by league:
+
+| League | Win % | Total | W | D | L |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Ligue 1 (France)** | **90.91%** | 22 | 20 | 0 | 2 |
+| **Bundesliga (Germany)** | **88.24%** | 17 | 15 | 1 | 1 |
+| **La Liga (Spain)** | **85.00%** | 20 | 17 | 2 | 1 |
+| Premier League (England) | 75.00% | 20 | 15 | 3 | 2 |
+| Serie A (Italy) | 73.33% | 15 | 11 | 2 | 2 |
+
+**Insight:** The pattern is strongest in France and Germany.
+
+### 3. Odds Movement Analysis
+Does it matter if the odds moved to 1.44 or started there?
+
+*   **Odds Unchanged (Init: 1.44 -> Final: 1.44):**
+    *   Win Rate: **88.89%** (16/18)
+    *   *Insight:* This appears to be the most reliable signal.
+
+*   **Odds Rose to 1.44 (e.g., started at 1.36):**
+    *   Win Rate: **83.33%** (25/30)
+    *   *Insight:* Even when the market loses some confidence (odds rising), the win rate remains very high.
+
+*   **Odds Dropped to 1.44 (e.g., started at 1.50):**
+    *   Win Rate: **80.43%** (37/46)
+    *   *Insight:* When money comes in on the home team (steaming the odds down), the win rate is actually slightly *lower* than when the odds are stable or drifting up, though still very good.
+
+### 4. Goal Difference Analysis (Handicap Betting)
+Winning margin for Home Wins in the 1.44 odds group:
+
+*   **Win by > 1 Goal (GD >= 2):**
+    *   **51 Matches** (54.26% of all 1.44 matches)
+    *   **65.38%** of winning matches.
+    *   *Insight:* Majority of wins cover a -1 handicap. The odds of this happening are slightly better than a coin flip (54% overall).
+
+*   **Win by > 2 Goals (GD >= 3):**
+    *   **25 Matches** (26.60% of all 1.44 matches)
+    *   **32.05%** of winning matches.
+    *   *Insight:* High risk for -2 handicap betting. Only about 1 in 4 matches result in a blowout.
+
+## Recommendation
+*   **High Confidence:** William Hill final odds of 1.44 in Ligue 1 or Bundesliga.
+*   **High Confidence:** William Hill odds opening and closing at 1.44.
+*   **Good Value:** Betting on **Home Team -1.5** (Asian Handicap) or **-1** (European Handicap) offers a reasonable strike rate (65% of wins cover this).
+*   **Avoid:** Betting on **Home Team -2.5** or higher, as this rarely happens (only 26% of the time).

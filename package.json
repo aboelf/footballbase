@@ -1,0 +1,27 @@
+{
+  "name": "footballbase",
+  "version": "1.0.0",
+  "description": "Parse league data files and store to Supabase",
+  "main": "scripts/parse-league.js",
+  "scripts": {
+    "parse": "node scripts/parse-league.js",
+    "parse:pl": "node scripts/parse-league.js 英超 s36",
+    "parse:seriea": "node scripts/parse-league.js 意甲 s34",
+    "parse:odds": "node scripts/parse-odds.js",
+    "parse:odds:pl": "node scripts/parse-odds.js 英超",
+    "parse:odds:laliga": "node scripts/parse-odds.js 西甲",
+    "parse:odds:bundesliga": "node scripts/parse-odds.js 德甲",
+    "parse:odds:ligue1": "node scripts/parse-odds.js 法甲",
+    "download:odds": "node scripts/download-odds.js",
+    "download:odds:all": "node scripts/download-all-seasons.js",
+    "insert:odds": "node scripts/insert-downloaded-odds.js",
+    "analyze": "node scripts/db-analyst.js",
+    "analyze:interactive": "node scripts/db-analyst.js",
+    "export:wh144": "node scripts/export-wh-144.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "dotenv": "^16.3.1",
+    "js-yaml": "^4.1.0"
+  }
+}
