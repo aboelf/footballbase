@@ -768,9 +768,6 @@ def main():
     print(f"  差值编码: {sax_delta}")
     print(f"  初盘赔率: 胜={init_home:.2f}, 平={init_draw:.2f}, 负={init_away:.2f}")
     print(
-        f"  数据库字段: init_win={init_home:.2f}, init_draw={init_draw:.2f}, init_lose={init_away:.2f}"
-    )
-    print(
         f"  均赔: 胜={target_odds['home_mean']:.2f}, 平={target_odds['draw_mean']:.2f}, 负={target_odds['away_mean']:.2f}"
     )
     print(f"  编码参数: word_size={WORD_SIZE}, alphabet_size={ALPHABET_SIZE}")
