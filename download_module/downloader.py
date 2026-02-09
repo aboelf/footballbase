@@ -92,11 +92,7 @@ class DataDownloader:
 
         self.session.headers.update(self.headers)
 
-        os.makedirs(base_path, exist_ok=True)
-        os.makedirs(f"{base_path}/analysis", exist_ok=True)
-        os.makedirs(f"{base_path}/odds/handicap", exist_ok=True)
-        os.makedirs(f"{base_path}/odds/odds", exist_ok=True)
-        os.makedirs(f"{base_path}/odds/overunder", exist_ok=True)
+        # 不自动创建子目录，由各下载脚本自行管理
 
     def _ensure_dir(self, path: str) -> None:
         """确保目录存在，不存在则自动创建"""

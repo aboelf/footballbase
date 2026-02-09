@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-批量下载比赛分析数据脚本
+批量下载 Bet365 亚盘数据脚本
 
 功能：
 1. 从 Supabase league_matches 表获取所有 match_id
-2. 复用 Playwright 浏览器批量下载分析数据
-3. 保存到 rawdata/比赛分析 目录
+2. 复用 Playwright 批量下载 bet365 亚盘数据
+3. 保存到 rawdata/odds/handicap 目录
 
 用法：
-    python download_all_analysis.py [--limit N] [--match-id ID] [--dry-run]
+    python download_all_handicap.py [--limit N] [--match-id ID] [--dry-run]
 """
 
 import os
 import sys
-import json
 import time
 import argparse
 from datetime import datetime
@@ -22,7 +21,7 @@ from dotenv import load_dotenv
 # 添加当前目录到 Python 路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from downloader import DataDownloader
+from downloader import DataDownloader, Bookmaker, OddsType
 
 
 # 加载环境变量
@@ -54,7 +53,6 @@ def fetch_all_match_ids(client) -> list[int]:
     print("从 Supabase 获取 league_matches 数据...")
 
     try:
-        # 获取所有 match_id
         result = client.table("league_matches").select("match_id").execute()
 
         if not result.data:
@@ -70,16 +68,16 @@ def fetch_all_match_ids(client) -> list[int]:
         return []
 
 
-def download_all_analysis_batch(
+def download_all_handicap_batch(
     downloader: DataDownloader,
     match_ids: list[int],
-    output_dir: str = "./rawdata/比赛分析",
+    output_dir: str = "./rawdata/odds/handicap",
     limit: int | None = None,
     dry_run: bool = False,
-    delay: float = 0.5,
+    delay: float = 0.3,
 ):
     """
-    批量下载比赛分析数据（复用浏览器）
+    批量下载 Bet365 亚盘数据（复用浏览器）
 
     Args:
         downloader: DataDownloader 实例
@@ -93,25 +91,24 @@ def download_all_analysis_batch(
         match_ids = match_ids[:limit]
 
     total = len(match_ids)
-    print(f"\n准备下载 {total} 场比赛的分析数据...")
+    print(f"\n准备下载 {total} 场比赛的 Bet365 亚盘数据...")
     print(f"  输出目录: {output_dir}")
     print(f"  试运行: {'是' if dry_run else '否'}")
     print(f"  下载间隔: {delay} 秒")
     print()
 
-    # 确保输出目录存在
+    # 确保输出目录存在（只创建指定的输出目录）
     if not dry_run:
         os.makedirs(output_dir, exist_ok=True)
 
-    # 更新 downloader 的 base_path
-    original_base_path = downloader.base_path
-    downloader.base_path = output_dir
+    # Bet365 公司 ID (亚盘)
+    company_id = 8
+    bookmaker = Bookmaker.BET365
 
     success_count = 0
     fail_count = 0
     skipped_count = 0
 
-    # 复用浏览器
     browser = None
     page = None
 
@@ -134,21 +131,21 @@ def download_all_analysis_batch(
 
             try:
                 # 检查是否已下载过
-                filename = f"{output_dir}/{match_id}.html"
+                filename = f"{output_dir}/{match_id}_bet365.html"
                 if os.path.exists(filename):
-                    print(f"⏭ 已存在，跳过")
+                    print("⏭ 已存在，跳过")
                     skipped_count += 1
                     continue
 
                 # 使用复用浏览器下载
-                url = f"https://zq.titan007.com/analysis/{match_id}cn.htm"
+                url = f"https://vip.titan007.com/changeDetail/handicap.aspx?id={match_id}&companyID={company_id}&l=0"
 
                 page.goto(url, wait_until="networkidle")
-                page.wait_for_timeout(1000)  # 等待动态内容
+                page.wait_for_timeout(1000)
                 html_content = page.content()
 
                 if html_content:
-                    # 使用 GBK 编码保存（titan007.com 使用中文编码）
+                    # 使用 GBK 编码保存（titan007.com 使用中文 GBK 编码）
                     with open(filename, "w", encoding="gbk", errors="replace") as f:
                         f.write(html_content)
 
@@ -174,22 +171,57 @@ def download_all_analysis_batch(
                 print("⏭ 跳过")
                 continue
             try:
-                existing_files = [
-                    f
-                    for f in os.listdir(output_dir)
-                    if f.startswith(f"{match_id}_") and f.endswith(".html")
-                ]
-                if existing_files:
-                    print(f"⏭ 已存在，跳过")
+                filename = f"{output_dir}/{match_id}_bet365.html"
+                if os.path.exists(filename):
+                    print("⏭ 已存在，跳过")
                     skipped_count += 1
                     continue
 
-                result = downloader._download_analysis_requests(match_id)
-                if result.get("status") == "success":
+                # 使用 requests 下载
+                url = f"https://vip.titan007.com/changeDetail/handicap.aspx?id={match_id}&companyID={company_id}&l=0"
+                response = downloader.session.get(url, timeout=30)
+
+                if response.status_code == 200:
+                    # 使用 GBK 编码
+                    response.encoding = "gbk"
+                    with open(filename, "w", encoding="gbk", errors="replace") as f:
+                        f.write(response.text)
                     print("✓ 成功")
                     success_count += 1
                 else:
-                    print(f"✗ 失败")
+                    print(f"✗ 失败: HTTP {response.status_code}")
+                    fail_count += 1
+            except Exception as e:
+                print(f"✗ 错误: {e}")
+                fail_count += 1
+            if i < total:
+                time.sleep(delay)
+
+    except ImportError:
+        print("⚠ Playwright 未安装，使用 requests 降级")
+        for i, match_id in enumerate(match_ids, 1):
+            print(f"[{i}/{total}] 比赛 ID: {match_id}", end=" ")
+            if dry_run:
+                print("⏭ 跳过")
+                continue
+            try:
+                filename = f"{output_dir}/{match_id}_bet365.html"
+                if os.path.exists(filename):
+                    print("⏭ 已存在，跳过")
+                    skipped_count += 1
+                    continue
+
+                # 使用 requests 下载
+                url = f"https://vip.titan007.com/changeDetail/handicap.aspx?id={match_id}&companyID={company_id}&l=0"
+                response = downloader.session.get(url, timeout=30)
+
+                if response.status_code == 200:
+                    with open(filename, "w", encoding="utf-8") as f:
+                        f.write(response.text)
+                    print("✓ 成功")
+                    success_count += 1
+                else:
+                    print(f"✗ 失败: HTTP {response.status_code}")
                     fail_count += 1
             except Exception as e:
                 print(f"✗ 错误: {e}")
@@ -198,13 +230,9 @@ def download_all_analysis_batch(
                 time.sleep(delay)
 
     finally:
-        # 关闭浏览器
         if browser:
             browser.close()
             print("\n🔒 浏览器已关闭")
-
-    # 恢复原始设置
-    downloader.base_path = original_base_path
 
     # 打印统计
     print("\n" + "=" * 60)
@@ -226,21 +254,21 @@ def download_all_analysis_batch(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="批量下载比赛分析数据",
+        description="批量下载 Bet365 亚盘数据",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-    # 下载所有比赛分析数据
-    python download_all_analysis.py
+    # 下载所有比赛的 Bet365 亚盘数据
+    python download_all_handicap.py
 
     # 只下载前 10 个
-    python download_all_analysis.py --limit 10
+    python download_all_handicap.py --limit 10
 
     # 只下载指定比赛
-    python download_all_analysis.py --match-id 2799893
+    python download_all_handicap.py --match-id 2799893
 
     # 试运行（不实际下载）
-    python download_all_analysis.py --dry-run
+    python download_all_handicap.py --dry-run
         """,
     )
 
@@ -251,13 +279,13 @@ def main():
         "--match-id",
         type=int,
         default=None,
-        help="只下载指定比赛 ID (与 --limit 互斥)",
+        help="只下载指定比赛 ID",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="./rawdata/比赛分析",
-        help="输出目录 (默认: ./rawdata/比赛分析)",
+        default="./rawdata/odds/handicap",
+        help="输出目录 (默认: ./rawdata/odds/handicap)",
     )
     parser.add_argument(
         "--delay", type=float, default=0.3, help="下载间隔秒数 (默认: 0.3)"
@@ -267,18 +295,11 @@ def main():
         action="store_true",
         help="试运行模式，只打印不下载",
     )
-    parser.add_argument(
-        "--browser/--no-browser",
-        dest="use_browser",
-        default=True,
-        action="store_true",
-        help="使用 Playwright 浏览器获取动态内容 (默认: True)",
-    )
 
     args = parser.parse_args()
 
     print("=" * 60)
-    print("批量下载比赛分析数据")
+    print("批量下载 Bet365 亚盘数据")
     print("=" * 60)
 
     # 创建下载器
@@ -304,8 +325,8 @@ def main():
         print("没有找到可下载的比赛 ID")
         sys.exit(0)
 
-    # 下载分析数据（复用浏览器）
-    result = download_all_analysis_batch(
+    # 下载亚盘数据（复用浏览器）
+    result = download_all_handicap_batch(
         downloader=downloader,
         match_ids=match_ids,
         output_dir=args.output_dir,
@@ -321,6 +342,8 @@ def main():
         result["output_dir"] = args.output_dir
 
         with open(log_file, "w", encoding="utf-8") as f:
+            import json
+
             json.dump(result, f, ensure_ascii=False, indent=2)
         print(f"\n下载记录已保存: {log_file}")
 
