@@ -10,8 +10,26 @@
 5. 使用浏览器打开分析页面
 
 用法:
-    python find_similar_matches.py <match_id>
+    python find_similar_matches.py <match_id> [options]
+
+示例:
+    # 基本用法（使用初盘筛选，默认）
     python find_similar_matches.py 2799893
+
+    # 使用终盘赔率进行筛选
+    python find_similar_matches.py 2799893 --use-final
+
+    # 使用平均赔率进行筛选
+    python find_similar_matches.py 2799893 --use-mean
+
+    # 自定义赔率容忍度（±10%）
+    python find_similar_matches.py 2799893 --use-final --tolerance 10
+
+选项:
+    --use-final      使用终盘赔率进行筛选（running_odds 最后一条记录）
+    --use-initial    使用初盘赔率进行筛选（默认）
+    --use-mean      使用平均赔率进行筛选
+    --tolerance N   赔率容忍百分比（默认 5.0）
 
 输出:
     - 控制台打印最相似的比赛列表
@@ -269,6 +287,9 @@ class MatchOdds:
     initial_odds_home: str
     initial_odds_draw: str
     initial_odds_away: str
+    final_odds_home: str
+    final_odds_draw: str
+    final_odds_away: str
     running_odds: list[RunningOdds]
 
 
@@ -362,19 +383,27 @@ def extract_bet365_odds(content: str) -> Optional[MatchOdds]:
         print(f"  解析详细赔率失败: {e}")
         return None
 
-    # 获取初始赔率
+    # 获取初始赔率和终盘赔率
     initial_odds_home = ""
     initial_odds_draw = ""
     initial_odds_away = ""
+    final_odds_home = ""
+    final_odds_draw = ""
+    final_odds_away = ""
 
     for item in game_items:
         if "|Bet 365|" in item:
             clean_data = item.replace('^"|"$', "").strip('"')
             parts = clean_data.split("|")
-            if len(parts) >= 6:
+            if len(parts) >= 14:
+                # parts[3-5] 是初赔
                 initial_odds_home = parts[3]
                 initial_odds_draw = parts[4]
                 initial_odds_away = parts[5]
+                # parts[10-12] 是终赔
+                final_odds_home = parts[10]
+                final_odds_draw = parts[11]
+                final_odds_away = parts[12]
             break
 
     return MatchOdds(
@@ -385,6 +414,9 @@ def extract_bet365_odds(content: str) -> Optional[MatchOdds]:
         initial_odds_home=initial_odds_home,
         initial_odds_draw=initial_odds_draw,
         initial_odds_away=initial_odds_away,
+        final_odds_home=final_odds_home,
+        final_odds_draw=final_odds_draw,
+        final_odds_away=final_odds_away,
         running_odds=running_odds,
     )
 
@@ -459,6 +491,7 @@ def find_similar_matches(
     top_n: int = 10,
     odds_tolerance_pct: float = 5.0,
     use_initial_odds: bool = True,
+    use_final_odds: bool = False,
 ) -> list[dict]:
     """
     查找 SAX 编码最相似的比赛（带赔率筛选）
@@ -470,22 +503,36 @@ def find_similar_matches(
         target_odds: 目标比赛的赔率
             - 使用初盘时: {'init_win': x, 'init_draw': x, 'init_lose': x}
             - 使用均赔时: {'home_mean': x, 'draw_mean': x, 'away_mean': x}
+            - 使用终盘时: {'final_win': x, 'final_draw': x, 'final_lose': x}
         word_size: SAX 分段数
         alphabet_size: 字母表大小
         top_n: 返回前 N 个最相似的比赛
         odds_tolerance_pct: 赔率容忍百分比（默认 ±5%）
-        use_initial_odds: 是否使用初盘赔率筛选（默认 True）
+        use_initial_odds: 是否使用初盘赔率筛选（默认 False，与终盘互斥）
+        use_final_odds: 是否使用终盘赔率筛选（默认 False，与初盘互斥）
 
     Returns:
         最相似的比赛列表
     """
+    # 确定赔率筛选类型
+    if use_final_odds:
+        odds_type = "终盘"
+    elif use_initial_odds:
+        odds_type = "初盘"
+    else:
+        odds_type = "均赔"
+
     print(
-        f"\n查找 SAX 编码最相似的比赛 (赔率筛选: {'初盘' if use_initial_odds else '均赔'}, ±{odds_tolerance_pct}%)..."
+        f"\n查找 SAX 编码最相似的比赛 (赔率筛选: {odds_type}, ±{odds_tolerance_pct}%)..."
     )
     print(f"  目标交错编码: {target_sax_interleaved}")
     print(f"  目标差值编码: {target_sax_delta}")
 
-    if use_initial_odds:
+    if use_final_odds:
+        print(
+            f"  目标终盘赔率: 胜={target_odds.get('final_win'):.2f}, 平={target_odds.get('final_draw'):.2f}, 负={target_odds.get('final_lose'):.2f}"
+        )
+    elif use_initial_odds:
         print(
             f"  目标初盘赔率: 胜={target_odds.get('init_win'):.2f}, 平={target_odds.get('init_draw'):.2f}, 负={target_odds.get('init_lose'):.2f}"
         )
@@ -504,7 +551,12 @@ def find_similar_matches(
     similarities = []
     filtered_count = 0
 
-    if use_initial_odds:
+    if use_final_odds:
+        # 使用终盘赔率筛选
+        target_home = target_odds.get("final_win", 0)
+        target_draw = target_odds.get("final_draw", 0)
+        target_away = target_odds.get("final_lose", 0)
+    elif use_initial_odds:
         # 使用初盘赔率筛选
         target_home = target_odds.get("init_win", 0)
         target_draw = target_odds.get("init_draw", 0)
@@ -527,7 +579,12 @@ def find_similar_matches(
         if not sax_interleaved:
             continue
 
-        if use_initial_odds:
+        if use_final_odds:
+            # 使用终盘赔率
+            item_home = item.get("final_win", 0)
+            item_draw = item.get("final_draw", 0)
+            item_away = item.get("final_lose", 0)
+        elif use_initial_odds:
             # 使用初盘赔率
             item_home = item.get("init_win", 0)
             item_draw = item.get("init_draw", 0)
@@ -682,11 +739,42 @@ def main():
 
     # 检查命令行参数
     if len(sys.argv) < 2:
-        print("用法: python find_similar_matches.py <match_id>")
+        print("用法: python find_similar_matches.py <match_id> [options]")
         print("示例: python find_similar_matches.py 2799893")
+        print("")
+        print("选项:")
+        print("  --use-final      使用终盘赔率进行筛选")
+        print("  --use-initial     使用初盘赔率进行筛选（默认）")
+        print("  --use-mean        使用平均赔率进行筛选")
+        print("  --tolerance N    赔率容忍百分比（默认 5）")
         sys.exit(1)
 
     match_id = sys.argv[1]
+
+    # 解析可选参数
+    use_final_odds = False
+    use_initial_odds = True
+    odds_tolerance_pct = 5.0
+
+    i = 2
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg == "--use-final":
+            use_final_odds = True
+            use_initial_odds = False
+        elif arg == "--use-initial":
+            use_final_odds = False
+            use_initial_odds = True
+        elif arg == "--use-mean":
+            use_final_odds = False
+            use_initial_odds = False
+        elif arg == "--tolerance" and i + 1 < len(sys.argv):
+            try:
+                odds_tolerance_pct = float(sys.argv[i + 1])
+                i += 1
+            except ValueError:
+                pass
+        i += 1
 
     # 1. 下载比赛数据
     print(f"\n[1/5] 下载比赛数据 (ID: {match_id})")
@@ -711,6 +799,16 @@ def main():
         f"  初始赔率: 胜={match_odds.initial_odds_home}, 平={match_odds.initial_odds_draw}, 负={match_odds.initial_odds_away}"
     )
     print(f"  赔率变化记录数: {len(match_odds.running_odds)}")
+    print(
+        f"  终盘赔率: 胜={match_odds.final_odds_home}, 平={match_odds.final_odds_draw}, 负={match_odds.final_odds_away}"
+    )
+
+    # 打印所有赔率记录
+    print(f"\n  [所有赔率记录] 共 {len(match_odds.running_odds)} 条:")
+    print(f"  {'序号':<6} {'时间':<25} {'胜':<8} {'平':<8} {'负':<8}")
+    print(f"  {'-' * 60}")
+    for i, ro in enumerate(match_odds.running_odds, 1):
+        print(f"  {i:<6} {ro.time:<25} {ro.home:<8} {ro.draw:<8} {ro.away:<8}")
 
     if len(match_odds.running_odds) < 2:
         print("错误: 赔率变化记录太少，无法进行 SAX 编码")
@@ -755,6 +853,11 @@ def main():
         float(match_odds.initial_odds_away) if match_odds.initial_odds_away else 0
     )
 
+    # 终盘赔率（从 match_odds 字段获取）
+    final_home = float(match_odds.final_odds_home) if match_odds.final_odds_home else 0
+    final_draw = float(match_odds.final_odds_draw) if match_odds.final_odds_draw else 0
+    final_away = float(match_odds.final_odds_away) if match_odds.final_odds_away else 0
+
     target_odds = {
         "init_win": init_home,
         "init_draw": init_draw,
@@ -762,11 +865,15 @@ def main():
         "home_mean": round(float(np.mean(home)), 3),
         "draw_mean": round(float(np.mean(draw)), 3),
         "away_mean": round(float(np.mean(away)), 3),
+        "final_win": final_home,
+        "final_draw": final_draw,
+        "final_lose": final_away,
     }
 
     print(f"  交错编码: {sax_interleaved}")
     print(f"  差值编码: {sax_delta}")
     print(f"  初盘赔率: 胜={init_home:.2f}, 平={init_draw:.2f}, 负={init_away:.2f}")
+    print(f"  终盘赔率: 胜={final_home:.2f}, 平={final_draw:.2f}, 负={final_away:.2f}")
     print(
         f"  均赔: 胜={target_odds['home_mean']:.2f}, 平={target_odds['draw_mean']:.2f}, 负={target_odds['away_mean']:.2f}"
     )
@@ -785,17 +892,26 @@ def main():
             word_size=WORD_SIZE,
             alphabet_size=ALPHABET_SIZE,
             top_n=10,
-            odds_tolerance_pct=5.0,  # 赔率容忍度 ±5%
-            use_initial_odds=True,  # 使用初盘筛选
+            odds_tolerance_pct=odds_tolerance_pct,
+            use_initial_odds=use_initial_odds,
+            use_final_odds=use_final_odds,
         )
 
         if not similar_matches:
             print("  未找到相似的比赛")
         else:
+            # 根据筛选类型显示对应的赔率列名
+            if use_final_odds:
+                odds_label = "终盘赔率(胜/平/负)"
+            elif use_initial_odds:
+                odds_label = "初盘赔率(胜/平/负)"
+            else:
+                odds_label = "均赔(胜/平/负)"
+
             print(f"\n找到 {len(similar_matches)} 场最相似的比赛:")
             print("-" * 60)
             print(
-                f"{'排名':<4} {'比赛ID':<12} {'交错编码':<20} {'距离':<8} {'初盘赔率(胜/平/负)':<20}"
+                f"{'排名':<4} {'比赛ID':<12} {'交错编码':<20} {'距离':<8} {odds_label:<20}"
             )
             print("-" * 60)
 
