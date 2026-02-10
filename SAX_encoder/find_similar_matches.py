@@ -13,22 +13,22 @@
     python find_similar_matches.py <match_id> [options]
 
 示例:
-    # 基本用法（使用初盘筛选，默认）
+    # 基本用法（使用均赔筛选，默认）
     python find_similar_matches.py 2799893
 
     # 使用终盘赔率进行筛选
     python find_similar_matches.py 2799893 --use-final
 
-    # 使用平均赔率进行筛选
-    python find_similar_matches.py 2799893 --use-mean
+    # 使用初盘赔率进行筛选
+    python find_similar_matches.py 2799893 --use-initial
 
     # 自定义赔率容忍度（±10%）
     python find_similar_matches.py 2799893 --use-final --tolerance 10
 
 选项:
     --use-final      使用终盘赔率进行筛选（running_odds 最后一条记录）
-    --use-initial    使用初盘赔率进行筛选（默认）
-    --use-mean      使用平均赔率进行筛选
+    --use-initial    使用初盘赔率进行筛选
+    --use-mean      使用平均赔率进行筛选（默认）
     --tolerance N   赔率容忍百分比（默认 5.0）
 
 输出:
@@ -744,8 +744,8 @@ def main():
         print("")
         print("选项:")
         print("  --use-final      使用终盘赔率进行筛选")
-        print("  --use-initial     使用初盘赔率进行筛选（默认）")
-        print("  --use-mean        使用平均赔率进行筛选")
+        print("  --use-initial    使用初盘赔率进行筛选")
+        print("  --use-mean       使用平均赔率进行筛选（默认）")
         print("  --tolerance N    赔率容忍百分比（默认 5）")
         sys.exit(1)
 
@@ -753,7 +753,7 @@ def main():
 
     # 解析可选参数
     use_final_odds = False
-    use_initial_odds = True
+    use_initial_odds = False  # 默认使用均赔
     odds_tolerance_pct = 5.0
 
     i = 2
