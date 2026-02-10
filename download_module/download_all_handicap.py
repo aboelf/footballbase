@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-批量下载 Bet365 亚盘数据脚本
+批量下载 Easybet 亚盘数据脚本
 
 功能：
 1. 从 Supabase league_matches 表获取所有 match_id
-2. 复用 Playwright 批量下载 bet365 亚盘数据
+2. 复用 Playwright 批量下载 easybet 亚盘数据
 3. 保存到 rawdata/odds/handicap 目录
 
 用法：
@@ -77,7 +77,7 @@ def download_all_handicap_batch(
     delay: float = 0.3,
 ):
     """
-    批量下载 Bet365 亚盘数据（复用浏览器）
+    批量下载 Easybet 亚盘数据（复用浏览器）
 
     Args:
         downloader: DataDownloader 实例
@@ -91,7 +91,7 @@ def download_all_handicap_batch(
         match_ids = match_ids[:limit]
 
     total = len(match_ids)
-    print(f"\n准备下载 {total} 场比赛的 Bet365 亚盘数据...")
+    print(f"\n准备下载 {total} 场比赛的 Easybet 亚盘数据...")
     print(f"  输出目录: {output_dir}")
     print(f"  试运行: {'是' if dry_run else '否'}")
     print(f"  下载间隔: {delay} 秒")
@@ -101,9 +101,9 @@ def download_all_handicap_batch(
     if not dry_run:
         os.makedirs(output_dir, exist_ok=True)
 
-    # Bet365 公司 ID (亚盘)
-    company_id = 8
-    bookmaker = Bookmaker.BET365
+    # Easybet 公司 ID (亚盘)
+    company_id = 12
+    bookmaker = Bookmaker.EASYBET
 
     success_count = 0
     fail_count = 0
@@ -131,7 +131,7 @@ def download_all_handicap_batch(
 
             try:
                 # 检查是否已下载过
-                filename = f"{output_dir}/{match_id}_bet365.html"
+                filename = f"{output_dir}/{match_id}_easybet.html"
                 if os.path.exists(filename):
                     print("⏭ 已存在，跳过")
                     skipped_count += 1
@@ -171,7 +171,7 @@ def download_all_handicap_batch(
                 print("⏭ 跳过")
                 continue
             try:
-                filename = f"{output_dir}/{match_id}_bet365.html"
+                filename = f"{output_dir}/{match_id}_easybet.html"
                 if os.path.exists(filename):
                     print("⏭ 已存在，跳过")
                     skipped_count += 1
@@ -205,7 +205,7 @@ def download_all_handicap_batch(
                 print("⏭ 跳过")
                 continue
             try:
-                filename = f"{output_dir}/{match_id}_bet365.html"
+                filename = f"{output_dir}/{match_id}_easybet.html"
                 if os.path.exists(filename):
                     print("⏭ 已存在，跳过")
                     skipped_count += 1
@@ -254,11 +254,11 @@ def download_all_handicap_batch(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="批量下载 Bet365 亚盘数据",
+        description="批量下载 Easybet 亚盘数据",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-    # 下载所有比赛的 Bet365 亚盘数据
+    # 下载所有比赛的 Easybet 亚盘数据
     python download_all_handicap.py
 
     # 只下载前 10 个
@@ -299,7 +299,7 @@ def main():
     args = parser.parse_args()
 
     print("=" * 60)
-    print("批量下载 Bet365 亚盘数据")
+    print("批量下载 Easybet 亚盘数据")
     print("=" * 60)
 
     # 创建下载器
