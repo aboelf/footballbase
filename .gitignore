@@ -6,3 +6,7 @@
 意甲/
 node_modules/
 rawdata/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
