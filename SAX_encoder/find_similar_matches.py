@@ -4,17 +4,20 @@
 
 功能:
 1. 输入比赛ID，下载 titan007.com 的比赛数据
-2. 提取 Bet 365 赔率数据
+2. 提取指定庄家赔率数据（支持 Bet 365, Easybets）
 3. 进行 SAX 编码
-4. 从 Supabase 查找 SAX 编码最相似的 top10 比赛
+4. 从 Supabase 查找 SAX 编码最相似的比赛
 5. 使用浏览器打开分析页面
 
 用法:
     python find_similar_matches.py <match_id> [options]
 
 示例:
-    # 基本用法（使用均赔筛选，默认）
+    # 基本用法（Bet 365，均赔筛选）
     python find_similar_matches.py 2799893
+
+    # 使用 Easybets 庄家
+    python find_similar_matches.py 2799893 --bookmaker Easybets
 
     # 使用终盘赔率进行筛选
     python find_similar_matches.py 2799893 --use-final
@@ -26,10 +29,11 @@
     python find_similar_matches.py 2799893 --use-final --tolerance 10
 
 选项:
-    --use-final      使用终盘赔率进行筛选（running_odds 最后一条记录）
-    --use-initial    使用初盘赔率进行筛选
-    --use-mean      使用平均赔率进行筛选（默认）
-    --tolerance N   赔率容忍百分比（默认 5.0）
+    --bookmaker NAME  指定庄家 (bet_365, easybets，默认: bet_365)
+    --use-final       使用终盘赔率进行筛选
+    --use-initial     使用初盘赔率进行筛选
+    --use-mean        使用平均赔率进行筛选（默认）
+    --tolerance N     赔率容忍百分比（默认 5.0）
 
 输出:
     - 控制台打印最相似的比赛列表
@@ -461,16 +465,21 @@ def get_supabase_client():
     )
 
 
-def fetch_all_sax_data(client) -> list[dict]:
-    """从 Supabase 获取所有 SAX 数据"""
-    print("从 Supabase 获取 SAX 数据...")
+def fetch_all_sax_data(client, bookmaker: str = "Bet 365") -> list[dict]:
+    """从 Supabase 获取指定庄家的 SAX 数据"""
+    print(f"从 Supabase 获取 SAX 数据 (庄家: {bookmaker})...")
 
     try:
-        # 获取所有数据（没有过滤条件）
-        result = client.table("match_odds_sax").select("*").execute()
+        # 从视图获取指定庄家的数据
+        result = (
+            client.table("v_match_odds_sax")
+            .select("*")
+            .eq("bookmaker_name", bookmaker)
+            .execute()
+        )
 
         if not result.data:
-            print("  警告: Supabase 中没有找到数据")
+            print(f"  警告: Supabase 中没有找到庄家 '{bookmaker}' 的数据")
             return []
 
         print(f"  已加载 {len(result.data)} 条记录")
@@ -492,6 +501,7 @@ def find_similar_matches(
     odds_tolerance_pct: float = 5.0,
     use_initial_odds: bool = True,
     use_final_odds: bool = False,
+    bookmaker: str = "Bet 365",
 ) -> list[dict]:
     """
     查找 SAX 编码最相似的比赛（带赔率筛选）
@@ -510,6 +520,7 @@ def find_similar_matches(
         odds_tolerance_pct: 赔率容忍百分比（默认 ±5%）
         use_initial_odds: 是否使用初盘赔率筛选（默认 False，与终盘互斥）
         use_final_odds: 是否使用终盘赔率筛选（默认 False，与初盘互斥）
+        bookmaker: 庄家名称（默认 Bet 365）
 
     Returns:
         最相似的比赛列表
@@ -523,7 +534,7 @@ def find_similar_matches(
         odds_type = "均赔"
 
     print(
-        f"\n查找 SAX 编码最相似的比赛 (赔率筛选: {odds_type}, ±{odds_tolerance_pct}%)..."
+        f"\n查找 SAX 编码最相似的比赛 (庄家: {bookmaker}, 赔率筛选: {odds_type}, ±{odds_tolerance_pct}%)..."
     )
     print(f"  目标交错编码: {target_sax_interleaved}")
     print(f"  目标差值编码: {target_sax_delta}")
@@ -541,8 +552,8 @@ def find_similar_matches(
             f"  目标平均赔率: 胜={target_odds.get('home_mean'):.2f}, 平={target_odds.get('draw_mean'):.2f}, 负={target_odds.get('away_mean'):.2f}"
         )
 
-    # 获取所有数据
-    all_data = fetch_all_sax_data(client)
+    # 获取指定庄家的数据
+    all_data = fetch_all_sax_data(client, bookmaker)
 
     if not all_data:
         return []
@@ -717,6 +728,68 @@ def open_analysis_pages(matches: list[dict]):
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="根据比赛 ID 查找 SAX 编码最相似的比赛",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  # 基本用法（Bet 365，均赔筛选）
+  python find_similar_matches.py 2799893
+
+  # 使用 Easybets 庄家
+  python find_similar_matches.py 2799893 --bookmaker Easybets
+
+  # 使用终盘赔率筛选
+  python find_similar_matches.py 2799893 --use-final
+
+  # 使用初盘赔率筛选
+  python find_similar_matches.py 2799893 --use-initial
+
+  # 自定义赔率容忍度
+  python find_similar_matches.py 2799893 --use-final --tolerance 10
+        """,
+    )
+
+    parser.add_argument("match_id", type=str, help="比赛 ID")
+    parser.add_argument(
+        "--bookmaker",
+        type=str,
+        default="Bet 365",
+        help="指定庄家 (bet_365, easybets，默认: Bet 365)",
+    )
+    parser.add_argument(
+        "--use-final",
+        action="store_true",
+        help="使用终盘赔率进行筛选",
+    )
+    parser.add_argument(
+        "--use-initial",
+        action="store_true",
+        help="使用初盘赔率进行筛选",
+    )
+    parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=5.0,
+        help="赔率容忍百分比（默认 5.0）",
+    )
+
+    args = parser.parse_args()
+
+    # 标准化庄家名称
+    bookmaker = args.bookmaker
+    if bookmaker.lower() in ["bet365", "bet_365", "bet-365"]:
+        bookmaker = "Bet 365"
+    elif bookmaker.lower() in ["easybets", "easybet"]:
+        bookmaker = "Easybets"
+
+    match_id = args.match_id
+    use_final_odds = args.use_final
+    use_initial_odds = args.use_initial
+    odds_tolerance_pct = args.tolerance
+
     print("=" * 60)
     print("根据比赛 ID 查找 SAX 编码最相似的比赛")
     print("=" * 60)
@@ -736,45 +809,6 @@ def main():
         print(
             f"  从配置文件加载参数: word_size={WORD_SIZE}, alphabet_size={ALPHABET_SIZE}, interpolate_len={INTERPOLATE_LEN}"
         )
-
-    # 检查命令行参数
-    if len(sys.argv) < 2:
-        print("用法: python find_similar_matches.py <match_id> [options]")
-        print("示例: python find_similar_matches.py 2799893")
-        print("")
-        print("选项:")
-        print("  --use-final      使用终盘赔率进行筛选")
-        print("  --use-initial    使用初盘赔率进行筛选")
-        print("  --use-mean       使用平均赔率进行筛选（默认）")
-        print("  --tolerance N    赔率容忍百分比（默认 5）")
-        sys.exit(1)
-
-    match_id = sys.argv[1]
-
-    # 解析可选参数
-    use_final_odds = False
-    use_initial_odds = False  # 默认使用均赔
-    odds_tolerance_pct = 5.0
-
-    i = 2
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg == "--use-final":
-            use_final_odds = True
-            use_initial_odds = False
-        elif arg == "--use-initial":
-            use_final_odds = False
-            use_initial_odds = True
-        elif arg == "--use-mean":
-            use_final_odds = False
-            use_initial_odds = False
-        elif arg == "--tolerance" and i + 1 < len(sys.argv):
-            try:
-                odds_tolerance_pct = float(sys.argv[i + 1])
-                i += 1
-            except ValueError:
-                pass
-        i += 1
 
     # 1. 下载比赛数据
     print(f"\n[1/5] 下载比赛数据 (ID: {match_id})")
@@ -895,6 +929,7 @@ def main():
             odds_tolerance_pct=odds_tolerance_pct,
             use_initial_odds=use_initial_odds,
             use_final_odds=use_final_odds,
+            bookmaker=bookmaker,
         )
 
         if not similar_matches:
