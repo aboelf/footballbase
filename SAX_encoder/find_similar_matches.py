@@ -32,6 +32,7 @@
     --bookmaker NAME  指定庄家 (bet_365, easybets，默认: bet_365)
     --use-final       使用终盘赔率进行筛选
     --use-initial     使用初盘赔率进行筛选
+    --use-both        同时使用初盘和终盘赔率进行筛选
     --use-mean        使用平均赔率进行筛选（默认）
     --tolerance N     赔率容忍百分比（默认 5.0）
 
@@ -499,8 +500,9 @@ def find_similar_matches(
     alphabet_size: int = 7,
     top_n: int = 10,
     odds_tolerance_pct: float = 5.0,
-    use_initial_odds: bool = True,
+    use_initial_odds: bool = False,
     use_final_odds: bool = False,
+    use_both_odds: bool = False,
     bookmaker: str = "Bet 365",
 ) -> list[dict]:
     """
@@ -518,15 +520,18 @@ def find_similar_matches(
         alphabet_size: 字母表大小
         top_n: 返回前 N 个最相似的比赛
         odds_tolerance_pct: 赔率容忍百分比（默认 ±5%）
-        use_initial_odds: 是否使用初盘赔率筛选（默认 False，与终盘互斥）
-        use_final_odds: 是否使用终盘赔率筛选（默认 False，与初盘互斥）
+        use_initial_odds: 是否使用初盘赔率筛选
+        use_final_odds: 是否使用终盘赔率筛选
+        use_both_odds: 是否同时使用初盘和终盘赔率筛选
         bookmaker: 庄家名称（默认 Bet 365）
 
     Returns:
         最相似的比赛列表
     """
     # 确定赔率筛选类型
-    if use_final_odds:
+    if use_both_odds:
+        odds_type = "初盘+终盘"
+    elif use_final_odds:
         odds_type = "终盘"
     elif use_initial_odds:
         odds_type = "初盘"
@@ -539,7 +544,14 @@ def find_similar_matches(
     print(f"  目标交错编码: {target_sax_interleaved}")
     print(f"  目标差值编码: {target_sax_delta}")
 
-    if use_final_odds:
+    if use_both_odds:
+        print(
+            f"  目标初盘赔率: 胜={target_odds.get('init_win'):.2f}, 平={target_odds.get('init_draw'):.2f}, 负={target_odds.get('init_lose'):.2f}"
+        )
+        print(
+            f"  目标终盘赔率: 胜={target_odds.get('final_win'):.2f}, 平={target_odds.get('final_draw'):.2f}, 负={target_odds.get('final_lose'):.2f}"
+        )
+    elif use_final_odds:
         print(
             f"  目标终盘赔率: 胜={target_odds.get('final_win'):.2f}, 平={target_odds.get('final_draw'):.2f}, 负={target_odds.get('final_lose'):.2f}"
         )
@@ -562,27 +574,6 @@ def find_similar_matches(
     similarities = []
     filtered_count = 0
 
-    if use_final_odds:
-        # 使用终盘赔率筛选
-        target_home = target_odds.get("final_win", 0)
-        target_draw = target_odds.get("final_draw", 0)
-        target_away = target_odds.get("final_lose", 0)
-    elif use_initial_odds:
-        # 使用初盘赔率筛选
-        target_home = target_odds.get("init_win", 0)
-        target_draw = target_odds.get("init_draw", 0)
-        target_away = target_odds.get("init_lose", 0)
-    else:
-        # 使用均赔筛选
-        target_home = target_odds.get("home_mean", 0)
-        target_draw = target_odds.get("draw_mean", 0)
-        target_away = target_odds.get("away_mean", 0)
-
-    # 转换为百分比阈值
-    home_threshold = target_home * (odds_tolerance_pct / 100)
-    draw_threshold = target_draw * (odds_tolerance_pct / 100)
-    away_threshold = target_away * (odds_tolerance_pct / 100)
-
     for item in all_data:
         sax_interleaved = item.get("sax_interleaved", "")
         sax_delta = item.get("sax_delta", "")
@@ -590,33 +581,141 @@ def find_similar_matches(
         if not sax_interleaved:
             continue
 
-        if use_final_odds:
+        if use_both_odds:
+            # 同时使用初盘和终盘赔率筛选
+            item_init_home = item.get("init_win", 0)
+            item_init_draw = item.get("init_draw", 0)
+            item_init_away = item.get("init_lose", 0)
+            item_final_home = item.get("final_win", 0)
+            item_final_draw = item.get("final_draw", 0)
+            item_final_away = item.get("final_lose", 0)
+
+            # 目标初盘赔率
+            target_init_home = target_odds.get("init_win", 0)
+            target_init_draw = target_odds.get("init_draw", 0)
+            target_init_away = target_odds.get("init_lose", 0)
+            # 目标终盘赔率
+            target_final_home = target_odds.get("final_win", 0)
+            target_final_draw = target_odds.get("final_draw", 0)
+            target_final_away = target_odds.get("final_lose", 0)
+
+            # 跳过无效赔率
+            if not item_init_home or not item_init_draw or not item_init_away:
+                continue
+            if not item_final_home or not item_final_draw or not item_final_away:
+                continue
+            if not target_init_home or not target_init_draw or not target_init_away:
+                continue
+            if not target_final_home or not target_final_draw or not target_final_away:
+                continue
+
+            # 初盘赔率筛选：三个赔率都在 ±5% 范围内
+            init_home_threshold = target_init_home * (odds_tolerance_pct / 100)
+            init_draw_threshold = target_init_draw * (odds_tolerance_pct / 100)
+            init_away_threshold = target_init_away * (odds_tolerance_pct / 100)
+
+            init_pass = (
+                abs(item_init_home - target_init_home) <= init_home_threshold
+                and abs(item_init_draw - target_init_draw) <= init_draw_threshold
+                and abs(item_init_away - target_init_away) <= init_away_threshold
+            )
+
+            # 终盘赔率筛选：三个赔率都在 ±5% 范围内
+            final_home_threshold = target_final_home * (odds_tolerance_pct / 100)
+            final_draw_threshold = target_final_draw * (odds_tolerance_pct / 100)
+            final_away_threshold = target_final_away * (odds_tolerance_pct / 100)
+
+            final_pass = (
+                abs(item_final_home - target_final_home) <= final_home_threshold
+                and abs(item_final_draw - target_final_draw) <= final_draw_threshold
+                and abs(item_final_away - target_final_away) <= final_away_threshold
+            )
+
+            if not (init_pass and final_pass):
+                continue
+
+            # 使用终盘赔率作为显示
+            item_home = item_final_home
+            item_draw = item_final_draw
+            item_away = item_final_away
+
+        elif use_final_odds:
             # 使用终盘赔率
+            target_home = target_odds.get("final_win", 0)
+            target_draw = target_odds.get("final_draw", 0)
+            target_away = target_odds.get("final_lose", 0)
+
             item_home = item.get("final_win", 0)
             item_draw = item.get("final_draw", 0)
             item_away = item.get("final_lose", 0)
+
+            # 跳过无效赔率
+            if not item_home or not item_draw or not item_away:
+                continue
+
+            # 赔率筛选
+            home_threshold = target_home * (odds_tolerance_pct / 100)
+            draw_threshold = target_draw * (odds_tolerance_pct / 100)
+            away_threshold = target_away * (odds_tolerance_pct / 100)
+
+            if (
+                abs(item_home - target_home) > home_threshold
+                or abs(item_draw - target_draw) > draw_threshold
+                or abs(item_away - target_away) > away_threshold
+            ):
+                continue
+
         elif use_initial_odds:
             # 使用初盘赔率
+            target_home = target_odds.get("init_win", 0)
+            target_draw = target_odds.get("init_draw", 0)
+            target_away = target_odds.get("init_lose", 0)
+
             item_home = item.get("init_win", 0)
             item_draw = item.get("init_draw", 0)
             item_away = item.get("init_lose", 0)
+
+            # 跳过无效赔率
+            if not item_home or not item_draw or not item_away:
+                continue
+
+            # 赔率筛选
+            home_threshold = target_home * (odds_tolerance_pct / 100)
+            draw_threshold = target_draw * (odds_tolerance_pct / 100)
+            away_threshold = target_away * (odds_tolerance_pct / 100)
+
+            if (
+                abs(item_home - target_home) > home_threshold
+                or abs(item_draw - target_draw) > draw_threshold
+                or abs(item_away - target_away) > away_threshold
+            ):
+                continue
+
         else:
             # 使用均赔
+            target_home = target_odds.get("home_mean", 0)
+            target_draw = target_odds.get("draw_mean", 0)
+            target_away = target_odds.get("away_mean", 0)
+
             item_home = item.get("home_mean", 0)
             item_draw = item.get("draw_mean", 0)
             item_away = item.get("away_mean", 0)
 
-        # 跳过无效赔率
-        if not item_home or not item_draw or not item_away:
-            continue
+            # 跳过无效赔率
+            if not item_home or not item_draw or not item_away:
+                continue
 
-        # 赔率筛选：三个赔率都在 ±5% 范围内
-        if (
-            abs(item_home - target_home) > home_threshold
-            or abs(item_draw - target_draw) > draw_threshold
-            or abs(item_away - target_away) > away_threshold
-        ):
-            continue
+            # 赔率筛选
+            home_threshold = target_home * (odds_tolerance_pct / 100)
+            draw_threshold = target_draw * (odds_tolerance_pct / 100)
+            away_threshold = target_away * (odds_tolerance_pct / 100)
+
+            if (
+                abs(item_home - target_home) > home_threshold
+                or abs(item_draw - target_draw) > draw_threshold
+                or abs(item_away - target_away) > away_threshold
+            ):
+                continue
 
         filtered_count += 1
 
@@ -747,6 +846,9 @@ def main():
   # 使用初盘赔率筛选
   python find_similar_matches.py 2799893 --use-initial
 
+  # 同时使用初盘和终盘赔率筛选
+  python find_similar_matches.py 2799893 --use-both
+
   # 自定义赔率容忍度
   python find_similar_matches.py 2799893 --use-final --tolerance 10
         """,
@@ -770,6 +872,11 @@ def main():
         help="使用初盘赔率进行筛选",
     )
     parser.add_argument(
+        "--use-both",
+        action="store_true",
+        help="同时使用初盘和终盘赔率进行筛选",
+    )
+    parser.add_argument(
         "--tolerance",
         type=float,
         default=5.0,
@@ -788,6 +895,7 @@ def main():
     match_id = args.match_id
     use_final_odds = args.use_final
     use_initial_odds = args.use_initial
+    use_both_odds = args.use_both
     odds_tolerance_pct = args.tolerance
 
     print("=" * 60)
@@ -929,6 +1037,7 @@ def main():
             odds_tolerance_pct=odds_tolerance_pct,
             use_initial_odds=use_initial_odds,
             use_final_odds=use_final_odds,
+            use_both_odds=use_both_odds,
             bookmaker=bookmaker,
         )
 
@@ -936,7 +1045,9 @@ def main():
             print("  未找到相似的比赛")
         else:
             # 根据筛选类型显示对应的赔率列名
-            if use_final_odds:
+            if use_both_odds:
+                odds_label = "初盘+终盘赔率"
+            elif use_final_odds:
                 odds_label = "终盘赔率(胜/平/负)"
             elif use_initial_odds:
                 odds_label = "初盘赔率(胜/平/负)"
