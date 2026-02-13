@@ -11,3 +11,4 @@ __pycache__/
 *.pyo
 *.pyd
 SAX_encoder/1.generateOddsDetail/SAX encoder/
+SAX_encoder/1.generateOddsDetail/SAX encoder/bookmaker_details/
