@@ -35,6 +35,7 @@
     --use-both        同时使用初盘和终盘赔率进行筛选
     --use-mean        使用平均赔率进行筛选（默认）
     --tolerance N     赔率容忍百分比（默认 5.0）
+    --use-dist N       combined_dist 阈值，只保留距离小于等于该值的比赛（默认 0.5）
 
 输出:
     - 控制台打印最相似的比赛列表
@@ -504,6 +505,7 @@ def find_similar_matches(
     use_final_odds: bool = False,
     use_both_odds: bool = False,
     bookmaker: str = "Bet 365",
+    use_dist: float = 0.5,
 ) -> list[dict]:
     """
     查找 SAX 编码最相似的比赛（带赔率筛选）
@@ -539,7 +541,7 @@ def find_similar_matches(
         odds_type = "均赔"
 
     print(
-        f"\n查找 SAX 编码最相似的比赛 (庄家: {bookmaker}, 赔率筛选: {odds_type}, ±{odds_tolerance_pct}%)..."
+        f"\n查找 SAX 编码最相似的比赛 (庄家: {bookmaker}, 赔率筛选: {odds_type}, ±{odds_tolerance_pct}%, 距离阈值: ≤{use_dist})..."
     )
     print(f"  目标交错编码: {target_sax_interleaved}")
     print(f"  目标差值编码: {target_sax_delta}")
@@ -750,10 +752,9 @@ def find_similar_matches(
 
     print(f"  赔率筛选后剩余: {filtered_count}/{len(all_data)} 场比赛")
 
-    # 按综合距离排序
     similarities.sort(key=lambda x: x["combined_dist"])
+    similarities = [s for s in similarities if s["combined_dist"] <= use_dist]
 
-    # 返回 top N（排除自身）
     result = [s for s in similarities if s["match_id"] != target_sax_interleaved][
         :top_n
     ]
@@ -882,6 +883,12 @@ def main():
         default=5.0,
         help="赔率容忍百分比（默认 5.0）",
     )
+    parser.add_argument(
+        "--use-dist",
+        type=float,
+        default=0.5,
+        help="combined_dist 阈值，只保留距离小于等于该值的比赛（默认 0.5）",
+    )
 
     args = parser.parse_args()
 
@@ -897,6 +904,7 @@ def main():
     use_initial_odds = args.use_initial
     use_both_odds = args.use_both
     odds_tolerance_pct = args.tolerance
+    use_dist = args.use_dist
 
     print("=" * 60)
     print("根据比赛 ID 查找 SAX 编码最相似的比赛")
@@ -1054,6 +1062,7 @@ def main():
             use_final_odds=use_final_odds,
             use_both_odds=use_both_odds,
             bookmaker=bookmaker,
+            use_dist=use_dist,
         )
 
         if not similar_matches:
