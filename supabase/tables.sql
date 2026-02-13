@@ -1,3 +1,22 @@
+
+-- 总亚盘赔率表
+CREATE TABLE IF NOT EXISTS public.total_handicap (
+  id BIGSERIAL PRIMARY KEY,
+  match_id BIGINT NOT NULL,
+  bookmaker VARCHAR(50) NOT NULL,
+  init_odds_home NUMERIC(6, 3),
+  handicap VARCHAR(50),
+  init_odds_away NUMERIC(6, 3),
+  final_handicap VARCHAR(50),
+  final_odds_home NUMERIC(6, 3),
+  final_odds_away NUMERIC(6, 3),
+  odds_detail JSONB,
+  created_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(match_id, bookmaker)
+);
+
+CREATE INDEX IF NOT EXISTS idx_total_handicap_match_id ON total_handicap(match_id);
+CREATE INDEX IF NOT EXISTS idx_total_handicap_bookmaker ON total_handicap(bookmaker);
 -- ============================================================
 -- 联合数据表：整合 betting_odds、league_matches、sax_encoding
 -- 连接条件：match_id = schedule_id AND sax_encoding.bookmaker = betting_odds.bookmaker_name
