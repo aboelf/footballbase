@@ -17,12 +17,22 @@ import sys
 import json
 import argparse
 import re
+import multiprocessing
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 from datetime import datetime
 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+
+# 尝试使用更快的 lxml 解析器
+HTML_PARSER = "html.parser"
+try:
+    import lxml
+
+    HTML_PARSER = "lxml"
+except ImportError:
+    pass
 
 # 添加当前目录到 Python 路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -82,6 +92,24 @@ BOOKMAKER_PATTERNS_MAIN = {
 }
 
 
+def _parse_worker(args: tuple) -> list[dict]:
+    """
+    多进程工作函数 - 供 multiprocessing 使用
+    """
+    filepath, verbose = args
+    try:
+        records = parse_html_file(filepath)
+        if verbose and records:
+            return records
+        elif verbose:
+            return []
+        return records
+    except Exception as e:
+        if verbose:
+            print(f"  Error processing {filepath}: {e}")
+        return []
+
+
 def parse_handicap_value(handicap_text: str) -> str:
     """
     解析盘口值 - 保留原始格式
@@ -113,7 +141,7 @@ def parse_html_file(filepath: str) -> list[dict]:
     with open(filepath, "rb") as f:
         html_content = f.read().decode("gbk", errors="replace")
 
-    soup = BeautifulSoup(html_content, "html.parser")
+    soup = BeautifulSoup(html_content, HTML_PARSER)
 
     results = []
 
@@ -495,6 +523,74 @@ def parse_directory(
     return all_records
 
 
+def parse_directory_parallel(
+    input_dir: str,
+    limit: Optional[int] = None,
+    match_id: Optional[int] = None,
+    dry_run: bool = False,
+    workers: int = 8,
+    quiet: bool = False,
+) -> list[dict]:
+    """
+    并行解析目录下所有 HTML 文件
+
+    Args:
+        input_dir: 输入目录
+        limit: 最多处理文件数
+        match_id: 只处理指定比赛
+        dry_run: 试运行模式
+        workers: 并行进程数
+        verbose: 是否显示详细进度
+
+    Returns:
+        所有解析后的记录
+    """
+    # 获取所有 HTML 文件
+    html_files = []
+    for f in os.listdir(input_dir):
+        if f.endswith("_total.html"):
+            if match_id:
+                file_match_id = re.match(r"(\d+)_total\.html", f)
+                if file_match_id and int(file_match_id.group(1)) == match_id:
+                    html_files.append(os.path.join(input_dir, f))
+            else:
+                html_files.append(os.path.join(input_dir, f))
+
+    if limit:
+        html_files = html_files[:limit]
+
+    total_files = len(html_files)
+    print(f"\n找到 {total_files} 个 HTML 文件")
+    print(f"  使用 {workers} 个并行进程")
+
+    if match_id:
+        print(f"  过滤: 只处理 match_id = {match_id}")
+
+    if dry_run:
+        print("[试运行模式] 不实际解析")
+        return []
+
+    # 准备任务参数
+    args_list = [(fp, not quiet) for fp in html_files]
+
+    # 使用多进程池并行处理
+    all_records = []
+    processed = 0
+
+    with multiprocessing.Pool(processes=workers) as pool:
+        # 使用 imap_unordered 提高效率
+        for records in pool.imap_unordered(_parse_worker, args_list, chunksize=10):
+            processed += 1
+            if records:
+                all_records.extend(records)
+            if not quiet and processed % 100 == 0:
+                print(f"  进度: {processed}/{total_files} ({len(all_records)} 条记录)")
+
+    print(f"  完成: {processed}/{total_files} 文件, {len(all_records)} 条记录")
+
+    return all_records
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="解析总亚盘数据并上传到 Supabase",
@@ -549,6 +645,22 @@ def main():
         default=100,
         help="批量上传大小 (默认: 100)",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="并行进程数 (默认: 8)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="显示详细进度",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="静默模式，不显示进度",
+    )
 
     args = parser.parse_args()
 
@@ -566,12 +678,14 @@ def main():
         print(f"\n错误: 输入目录不存在: {args.input_dir}")
         sys.exit(1)
 
-    # 解析 HTML 文件
-    records = parse_directory(
+    # 解析 HTML 文件 (并行处理)
+    records = parse_directory_parallel(
         input_dir=args.input_dir,
         limit=args.limit,
         match_id=args.match_id,
         dry_run=args.dry_run,
+        workers=args.workers,
+        quiet=args.quiet,
     )
 
     if not records:
