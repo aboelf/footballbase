@@ -902,20 +902,27 @@ def main():
     print("根据比赛 ID 查找 SAX 编码最相似的比赛")
     print("=" * 60)
 
-    # 加载 SAX 编码参数
-    config_path = "sax_config.json"
-    WORD_SIZE = 8
-    ALPHABET_SIZE = 7
-    INTERPOLATE_LEN = 32
+    # 加载 SAX 编码参数（根据庄家加载对应配置文件）
+    config_dir = "SAX_encoder/bookmaker_details"
+    config_path = None
+    word_size = 8
+    alphabet_size = 7
+    interpolate_len = 32
 
-    if os.path.exists(config_path):
+    # 根据庄家名称确定配置文件路径
+    if bookmaker == "Bet 365":
+        config_path = os.path.join(config_dir, "sax_config_bet_365.json")
+    elif bookmaker == "Easybets":
+        config_path = os.path.join(config_dir, "sax_config_easybets.json")
+
+    if config_path and os.path.exists(config_path):
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
-        WORD_SIZE = config.get("word_size", WORD_SIZE)
-        ALPHABET_SIZE = config.get("alphabet_size", ALPHABET_SIZE)
-        INTERPOLATE_LEN = config.get("interpolate_len", INTERPOLATE_LEN)
+        word_size = config.get("word_size", word_size)
+        alphabet_size = config.get("alphabet_size", alphabet_size)
+        interpolate_len = config.get("interpolate_len", interpolate_len)
         print(
-            f"  从配置文件加载参数: word_size={WORD_SIZE}, alphabet_size={ALPHABET_SIZE}, interpolate_len={INTERPOLATE_LEN}"
+            f"  从配置文件加载 SAX 参数 (庄家: {bookmaker}): word_size={word_size}, alphabet_size={alphabet_size}, interpolate_len={interpolate_len}"
         )
 
     # 1. 下载比赛数据
@@ -958,10 +965,18 @@ def main():
 
     # 3. SAX 编码
     print(f"\n[3/5] SAX 编码")
+    sax_config_path = (
+        config_path if config_path and os.path.exists(config_path) else None
+    )
     encoder = SAXEncoder(
-        word_size=WORD_SIZE,
-        alphabet_size=ALPHABET_SIZE,
-        config_path=config_path if os.path.exists(config_path) else None,
+        word_size=word_size,
+        alphabet_size=alphabet_size,
+        config_path=sax_config_path,
+    )
+    encoder = SAXEncoder(
+        word_size=word_size,
+        alphabet_size=alphabet_size,
+        config_path=sax_config_path,
     )
 
     home, draw, away = extract_odds_series(match_odds)
@@ -978,8 +993,8 @@ def main():
     delta_series = [home[i] - away[i] for i in range(min_len)]
 
     # 编码
-    sax_interleaved = encoder.encode(joint_series, INTERPOLATE_LEN * 3)
-    sax_delta = encoder.encode(delta_series, INTERPOLATE_LEN)
+    sax_interleaved = encoder.encode(joint_series, interpolate_len * 3)
+    sax_delta = encoder.encode(delta_series, interpolate_len)
 
     # 计算目标比赛的平均赔率
     import numpy as np
@@ -1019,7 +1034,7 @@ def main():
     print(
         f"  均赔: 胜={target_odds['home_mean']:.2f}, 平={target_odds['draw_mean']:.2f}, 负={target_odds['away_mean']:.2f}"
     )
-    print(f"  编码参数: word_size={WORD_SIZE}, alphabet_size={ALPHABET_SIZE}")
+    print(f"  编码参数: word_size={word_size}, alphabet_size={alphabet_size}")
 
     # 4. 从 Supabase 查找相似比赛
     print(f"\n[4/5] 从 Supabase 查找相似比赛")
@@ -1031,8 +1046,8 @@ def main():
             sax_interleaved,
             sax_delta,
             target_odds=target_odds,
-            word_size=WORD_SIZE,
-            alphabet_size=ALPHABET_SIZE,
+            word_size=word_size,
+            alphabet_size=alphabet_size,
             top_n=10,
             odds_tolerance_pct=odds_tolerance_pct,
             use_initial_odds=use_initial_odds,
