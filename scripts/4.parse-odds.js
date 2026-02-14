@@ -38,7 +38,6 @@ const TARGET_BOOKMAKERS = [
   'William Hill',
   'Bet 365',
   'Easybets',
-  'Lottery Official',
   'Macauslot'
 ];
 
