@@ -85,9 +85,12 @@ function extractLeagueInfo(content) {
 function parseFile(filePath) {
   const content = fs.readFileSync(filePath, 'utf-8');
 
-  // Extract season from path
-  const seasonMatch = filePath.match(/(\d{4}-\d{4})[\\/]/);
-  const season = seasonMatch ? seasonMatch[1] : null;
+  // Extract season from path - support both "2021" and "2021-2022" formats
+  const seasonMatch = filePath.match(/(\d{4})(?:-\d{4})?[\\/]/);
+  let season = null;
+  if (seasonMatch) {
+    season = seasonMatch[1]; // Keep as single year: "2021"
+  }
 
   // Extract league info
   const leagueInfo = extractLeagueInfo(content);
