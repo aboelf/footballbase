@@ -1,4 +1,4 @@
-CREATE TABLE match_odds AS
+CREATE VIEW v_match_odds AS
   SELECT
     lm.match_id,
     lm.league_name,
