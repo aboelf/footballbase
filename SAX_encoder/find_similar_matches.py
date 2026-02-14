@@ -903,6 +903,8 @@ def main():
     use_final_odds = args.use_final
     use_initial_odds = args.use_initial
     use_both_odds = args.use_both
+    if not use_initial_odds and not use_final_odds and not use_both_odds:
+        use_final_odds = True
     odds_tolerance_pct = args.tolerance
     use_dist = args.use_dist
 
@@ -1049,21 +1051,60 @@ def main():
 
     try:
         client = get_supabase_client()
-        similar_matches = find_similar_matches(
-            client,
-            sax_interleaved,
-            sax_delta,
-            target_odds=target_odds,
-            word_size=word_size,
-            alphabet_size=alphabet_size,
-            top_n=10,
-            odds_tolerance_pct=odds_tolerance_pct,
-            use_initial_odds=use_initial_odds,
-            use_final_odds=use_final_odds,
-            use_both_odds=use_both_odds,
-            bookmaker=bookmaker,
-            use_dist=use_dist,
-        )
+
+        if use_both_odds:
+            similar_matches_final = find_similar_matches(
+                client,
+                sax_interleaved,
+                sax_delta,
+                target_odds=target_odds,
+                word_size=word_size,
+                alphabet_size=alphabet_size,
+                top_n=10,
+                odds_tolerance_pct=odds_tolerance_pct,
+                use_initial_odds=False,
+                use_final_odds=True,
+                use_both_odds=False,
+                bookmaker=bookmaker,
+                use_dist=use_dist,
+            )
+
+            similar_matches_initial = find_similar_matches(
+                client,
+                sax_interleaved,
+                sax_delta,
+                target_odds=target_odds,
+                word_size=word_size,
+                alphabet_size=alphabet_size,
+                top_n=10,
+                odds_tolerance_pct=odds_tolerance_pct,
+                use_initial_odds=True,
+                use_final_odds=False,
+                use_both_odds=False,
+                bookmaker=bookmaker,
+                use_dist=use_dist,
+            )
+
+            combined = similar_matches_final + similar_matches_initial
+            combined.sort(key=lambda x: x["combined_dist"])
+            similar_matches = combined[:20]
+
+        else:
+            similar_matches = find_similar_matches(
+                client,
+                sax_interleaved,
+                sax_delta,
+                target_odds=target_odds,
+                word_size=word_size,
+                alphabet_size=alphabet_size,
+                top_n=10,
+                odds_tolerance_pct=odds_tolerance_pct,
+                use_initial_odds=use_initial_odds,
+                use_final_odds=use_final_odds,
+                use_both_odds=False,
+                bookmaker=bookmaker,
+                use_dist=use_dist,
+            )
 
         if not similar_matches:
             print("  未找到相似的比赛")
