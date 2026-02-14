@@ -30,8 +30,8 @@ if (supabaseUrl && supabaseKey) {
   console.warn('Supabase credentials not configured, data will be logged only');
 }
 
-const LEAGUES = ['英超', '意甲', '西甲', '德甲', '法甲'];
-const SEASONS = ['2020-2021', '2021-2022', '2022-2023', '2023-2024', '2024-2025'];
+const LEAGUES = ['英超', '意甲', '西甲', '德甲', '法甲', '日职联'];
+const SEASONS = ['2020-2021', '2021-2022', '2022-2023', '2023-2024', '2024-2025', '2021', '2022', '2023', '2024', '2025'];
 
 // Target bookmakers
 const TARGET_BOOKMAKERS = [
