@@ -6,7 +6,7 @@
 - 自动发现 bookmaker_details/ 目录下所有庄家配置和数据文件
 - 每个庄家使用独立的 SAX 配置参数
 - 支持单独编码 (Individual) 和联合编码 (Joint)
-
+python 3.run_sax.py --config-dir "1.generateOddsDetail/SAX encoder/bookmaker_details" --data-dir "1.generateOddsDetail/SAX encoder/bookmaker_details"
 输出结构:
   - {庄家}_sax_individual.json: 各庄家分别编码结果
   - {庄家}_sax_joint.json: 各庄家联合编码结果
@@ -159,7 +159,8 @@ class MultiBookmakerSAXProcessor:
             config = load_bookmaker_config(config_path)
             self.configs[bookmaker] = config
             print(
-                f"  - {bookmaker}: word_size={config.get('word_size')}, "
+                f"  - {bookmaker}: strategy={config.get('strategy', 'individual')}, "
+                f"word_size={config.get('word_size')}, "
                 f"alphabet_size={config.get('alphabet_size')}, "
                 f"interpolate_len={config.get('interpolate_len')}"
             )
@@ -185,7 +186,8 @@ class MultiBookmakerSAXProcessor:
                         "word_size": config.get("word_size", 8),
                         "alphabet_size": config.get("alphabet_size", 7),
                         "interpolate_len": config.get("interpolate_len", 32),
-                        "alphabet": None,  # 会在 encoder 中设置
+                        "strategy": config.get("strategy", "individual"),
+                        "alphabet": None,
                         "breakpoints": None,
                     },
                 }
@@ -202,6 +204,7 @@ class MultiBookmakerSAXProcessor:
                         "word_size": 8,
                         "alphabet_size": 7,
                         "interpolate_len": 32,
+                        "strategy": "individual",
                         "alphabet": None,
                         "breakpoints": None,
                     },
@@ -259,7 +262,7 @@ class MultiBookmakerSAXProcessor:
         }
 
     def process_match_joint(self, match: dict, bookmaker: str):
-        """处理比赛 - 联合编码方案"""
+        """处理比赛 - 联合编码方案 (根据config中的strategy)"""
         result = extract_odds_series_from_match(match, bookmaker)
         if result is None:
             return None
@@ -268,31 +271,55 @@ class MultiBookmakerSAXProcessor:
         encoder_data = self.get_encoder(bookmaker)
         encoder = encoder_data["encoder"]
         params = encoder_data["params"]
+        strategy = params.get("strategy", "individual")
 
-        # 交错拼接序列
-        joint_series = create_joint_series(home, draw, away)  # type: ignore
-
-        # 差值序列
-        delta_series = create_delta_series(home, away)  # type: ignore
-
-        return {
-            "scheduleId": match.get("scheduleId"),
-            "hometeam": match.get("hometeam"),
-            "guestteam": match.get("guestteam"),
-            "matchTime": match.get("matchTime"),
-            "season": match.get("season"),
-            "bookmaker": bookmaker,
-            "sax_interleaved": encoder.encode(
+        # 根据strategy生成不同的编码
+        if strategy == "interleaved":
+            # 使用交错拼接编码
+            joint_series = create_joint_series(home, draw, away)
+            sax_interleaved = encoder.encode(
                 joint_series, params["interpolate_len"] * 3
-            ),
-            "sax_delta": encoder.encode(delta_series, params["interpolate_len"]),
-            "stats": {
-                "home_mean": round(float(np.mean(home)), 3),  # type: ignore
-                "draw_mean": round(float(np.mean(draw)), 3),  # type: ignore
-                "away_mean": round(float(np.mean(away)), 3),  # type: ignore
-                "running_odds_count": len(home),
-            },
-        }
+            )
+
+            return {
+                "scheduleId": match.get("scheduleId"),
+                "hometeam": match.get("hometeam"),
+                "guestteam": match.get("guestteam"),
+                "matchTime": match.get("matchTime"),
+                "season": match.get("season"),
+                "bookmaker": bookmaker,
+                "sax_interleaved": sax_interleaved,
+                "sax_delta": None,
+                "stats": {
+                    "home_mean": round(float(np.mean(home)), 3),
+                    "draw_mean": round(float(np.mean(draw)), 3),
+                    "away_mean": round(float(np.mean(away)), 3),
+                    "running_odds_count": len(home),
+                },
+            }
+        else:
+            # 使用传统的joint编码 (interleaved + delta)
+            joint_series = create_joint_series(home, draw, away)
+            delta_series = create_delta_series(home, away)
+
+            return {
+                "scheduleId": match.get("scheduleId"),
+                "hometeam": match.get("hometeam"),
+                "guestteam": match.get("guestteam"),
+                "matchTime": match.get("matchTime"),
+                "season": match.get("season"),
+                "bookmaker": bookmaker,
+                "sax_interleaved": encoder.encode(
+                    joint_series, params["interpolate_len"] * 3
+                ),
+                "sax_delta": encoder.encode(delta_series, params["interpolate_len"]),
+                "stats": {
+                    "home_mean": round(float(np.mean(home)), 3),
+                    "draw_mean": round(float(np.mean(draw)), 3),
+                    "away_mean": round(float(np.mean(away)), 3),
+                    "running_odds_count": len(home),
+                },
+            }
 
     def process_file(self, data_file: str) -> Tuple[Dict[str, List], Dict[str, List]]:
         """
