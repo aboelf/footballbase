@@ -336,12 +336,12 @@ if (require.main === module) {
       process.exit(1);
     }
   } else {
-    // 处理所有5大联赛
-    console.log('Processing all 5 major European leagues: 德甲, 法甲, 西甲, 意甲, 英超');
+    // 处理所有联赛
+    console.log('Processing all leagues: 德甲, 法甲, 西甲, 意甲, 英超, 日职联');
     console.log(`Target bookmakers: ${targetBookmakers.join(', ') || 'All'}`);
     console.log('='.repeat(50));
 
-    const leagues = ['德甲', '法甲', '西甲', '意甲', '英超'];
+    const leagues = ['德甲', '法甲', '西甲', '意甲', '英超', '日职联'];
 
     for (const league of leagues) {
       const leagueDir = `../../rawdata/${league}`;
