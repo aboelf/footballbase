@@ -26,3 +26,34 @@ CREATE VIEW v_match_odds AS
   FROM league_matches lm
   INNER JOIN betting_odds bo ON lm.match_id = bo.schedule_id
   ORDER BY lm.match_time DESC, bo.bookmaker_name;
+
+CREATE VIEW public.v_match_odds_sax AS
+SELECT
+  bo.schedule_id AS match_id,
+  bo.bookmaker_name,
+  lm.league_name,
+  lm.match_time,
+  lm.home_team_name,
+  lm.away_team_name,
+  lm.final_score,
+  bo.init_win,
+  bo.init_draw,
+  bo.init_lose,
+  bo.init_return,
+  bo.final_win,
+  bo.final_draw,
+  bo.final_lose,
+  bo.final_return,
+  bs.sax_interleaved,
+  bs.sax_delta,
+  bs.home_mean,
+  bs.draw_mean,
+  bs.away_mean,
+  lm.season,
+  lm.round
+FROM public.betting_odds bo
+INNER JOIN public.sax_encoding bs
+  ON bo.schedule_id = bs.match_id
+  AND bo.bookmaker_name = bs.bookmaker
+LEFT JOIN public.league_matches lm
+  ON bo.schedule_id = lm.match_id;
