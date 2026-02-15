@@ -10,5 +10,5 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-SAX_encoder/1.generateOddsDetail/SAX encoder/
-SAX_encoder/1.generateOddsDetail/SAX encoder/bookmaker_details/
+SAX_encoder/1.generateOddsDetail/SAX encoder/bookmaker_details/bet_365_details.json
+SAX_encoder/1.generateOddsDetail/SAX encoder/bookmaker_details/easybets_details.json
