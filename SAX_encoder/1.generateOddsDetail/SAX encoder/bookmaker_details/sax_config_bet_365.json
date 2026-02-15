@@ -1,32 +1,33 @@
 {
   "bookmaker": "Bet 365",
-  "word_size": 8,
-  "alphabet_size": 8,
+  "strategy": "interleaved",
+  "word_size": 10,
+  "alphabet_size": 4,
   "interpolate_len": 32,
   "breakpoints_type": "empirical",
   "empirical_breakpoints": [
-    -1.1338934190276784,
-    -0.7040680615781935,
-    -0.3448146410452742,
-    -0.013700772791047755,
-    0.3052804458831103,
-    0.6831300510639732,
-    1.1547005383792464
+    -0.7102327856651508,
+    -0.007914231285559107,
+    0.6872487728187603
   ],
   "gaussian_breakpoints": [
-    -1.1503493803760079,
     -0.6744897501960817,
-    -0.31863936396437514,
     0.0,
-    0.31863936396437514,
-    0.6744897501960817,
-    1.1503493803760079
+    0.6744897501960817
   ],
+  "evaluation_params": {
+    "min_samples": 3,
+    "purity_threshold": 0.55,
+    "coverage": 0.284,
+    "accuracy": 0.6722,
+    "note": "优化后的参数，基于覆盖率测试"
+  },
   "metadata": {
-    "n_matches_total": 17680,
-    "n_matches_valid": 8881,
-    "median_length": 15.0,
-    "skewness": 0.15607524137882306,
-    "kurtosis": 1.7189723852723144
+    "n_matches_total": 21184,
+    "n_matches_valid": 10625,
+    "median_length": 14.0,
+    "skewness": 0.14256755264667148,
+    "kurtosis": 1.4325536042068112,
+    "last_updated": "2026-02-15"
   }
 }

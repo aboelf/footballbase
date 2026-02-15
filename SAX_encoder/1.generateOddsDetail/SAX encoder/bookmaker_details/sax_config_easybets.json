@@ -1,32 +1,33 @@
 {
   "bookmaker": "Easybets",
-  "word_size": 10,
-  "alphabet_size": 8,
-  "interpolate_len": 96,
+  "strategy": "interleaved",
+  "word_size": 8,
+  "alphabet_size": 4,
+  "interpolate_len": 91,
   "breakpoints_type": "empirical",
   "empirical_breakpoints": [
-    -1.1174092671158178,
-    -0.7282786155144769,
-    -0.3985360759228,
-    -0.066308277410149,
-    0.29907522791591146,
-    0.6972308051912458,
-    1.1874645015519563
+    -0.7299909500157229,
+    -0.06410208518733765,
+    0.7017565899639243
   ],
   "gaussian_breakpoints": [
-    -1.1503493803760079,
     -0.6744897501960817,
-    -0.31863936396437514,
     0.0,
-    0.31863936396437514,
-    0.6744897501960817,
-    1.1503493803760079
+    0.6744897501960817
   ],
+  "evaluation_params": {
+    "min_samples": 3,
+    "purity_threshold": 0.55,
+    "coverage": 0.256,
+    "accuracy": 0.6738,
+    "note": "优化后的参数，基于覆盖率测试"
+  },
   "metadata": {
-    "n_matches_total": 17680,
-    "n_matches_valid": 8641,
-    "median_length": 43.0,
-    "skewness": 0.2309044630341753,
-    "kurtosis": 0.021685469601424145
+    "n_matches_total": 21184,
+    "n_matches_valid": 10387,
+    "median_length": 41.0,
+    "skewness": 0.2217036653275589,
+    "kurtosis": -0.00870062812729655,
+    "last_updated": "2026-02-15"
   }
 }
