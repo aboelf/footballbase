@@ -68,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_v_match_odds_sax_league ON v_match_odds_sax(leagu
 -- ============================================================
 CREATE TABLE IF NOT EXISTS public.sax_encoding (
   id BIGSERIAL PRIMARY KEY,
-  bookmaker VARCHAR(50) NOT NULL DEFAULT 'Bet 365',
+  bookmaker VARCHAR(50) NOT NULL,
   match_id BIGINT NOT NULL,
   hometeam VARCHAR(100),
   guestteam VARCHAR(100),
