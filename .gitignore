@@ -12,3 +12,7 @@ __pycache__/
 *.pyd
 SAX_encoder/1.generateOddsDetail/SAX encoder/bookmaker_details/bet_365_details.json
 SAX_encoder/1.generateOddsDetail/SAX encoder/bookmaker_details/easybets_details.json
+SAX_encoder/sax_results/Bet 365_sax_individual.json
+SAX_encoder/sax_results/Bet 365_sax_joint.json
+SAX_encoder/sax_results/Easybets_sax_individual.json
+SAX_encoder/sax_results/Easybets_sax_joint.json
