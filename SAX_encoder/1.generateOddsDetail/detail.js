@@ -248,8 +248,9 @@ function extractAllSeasons(leagueDir, targetBookmakers = []) {
   }
 
   const entries = fs.readdirSync(leagueDir, { withFileTypes: true });
+  // 支持两种格式: 2024-2025 或 2024
   const seasonDirs = entries
-    .filter(entry => entry.isDirectory() && entry.name.match(/\d{4}-\d{4}/))
+    .filter(entry => entry.isDirectory() && (entry.name.match(/^\d{4}$/) || entry.name.match(/^\d{4}-\d{4}$/)))
     .map(entry => entry.name)
     .sort();
 
@@ -301,8 +302,9 @@ if (require.main === module) {
     // 处理指定目录
     if (fs.existsSync(targetPath)) {
       const entries = fs.readdirSync(targetPath, { withFileTypes: true });
-      const hasSeasons = entries.some(e => e.isDirectory() && e.name.match(/\d{4}-\d{4}/));
-      const isLeagueDir = entries.some(e => e.isDirectory() && !e.name.match(/\d{4}-\d{4}/));
+      // 支持两种赛季格式: 2024-2025 或 2024
+      const hasSeasons = entries.some(e => e.isDirectory() && (e.name.match(/^\d{4}-\d{4}$/) || e.name.match(/^\d{4}$/)));
+      const isLeagueDir = entries.some(e => e.isDirectory() && !e.name.match(/^\d{4}(-\d{4})?$/));
 
       if (hasSeasons) {
         // 直接是赛季目录
