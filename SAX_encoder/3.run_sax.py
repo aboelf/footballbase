@@ -164,13 +164,20 @@ class MultiBookmakerSAXProcessor:
                 f"interpolate_len={config.get('interpolate_len')}"
             )
 
+    @staticmethod
+    def normalize_bookmaker_name(name: str) -> str:
+        """标准化庄家名称：Bet 365 -> bet_365"""
+        return name.lower().replace(" ", "_")
+
     def get_encoder(self, bookmaker: str):
         """获取或创建指定庄家的编码器"""
         if bookmaker not in self.encoders:
-            if bookmaker in self.configs:
-                config = self.configs[bookmaker]
+            # 标准化名称用于匹配配置文件
+            normalized = self.normalize_bookmaker_name(bookmaker)
+            if normalized in self.configs:
+                config = self.configs[normalized]
                 config_path = os.path.join(
-                    self.config_dir, f"sax_config_{bookmaker}.json"
+                    self.config_dir, f"sax_config_{normalized}.json"
                 )
                 self.encoders[bookmaker] = {
                     "encoder": self._create_encoder_from_config(config, config_path),
