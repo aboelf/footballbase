@@ -1,131 +1,103 @@
 
 -- 总亚盘赔率表
-CREATE TABLE IF NOT EXISTS public.total_handicap (
-  id BIGSERIAL PRIMARY KEY,
-  match_id BIGINT NOT NULL,
-  bookmaker VARCHAR(50) NOT NULL,
-  init_odds_home NUMERIC(6, 3),
-  handicap VARCHAR(50),
-  init_odds_away NUMERIC(6, 3),
-  final_handicap VARCHAR(50),
-  final_odds_home NUMERIC(6, 3),
-  final_odds_away NUMERIC(6, 3),
-  odds_detail JSONB,
-  created_at TIMESTAMP DEFAULT NOW(),
-  UNIQUE(match_id, bookmaker)
-);
+create table public.total_handicap (
+  id bigserial not null,
+  match_id bigint not null,
+  bookmaker character varying(50) not null,
+  init_odds_home numeric(6, 3) null,
+  handicap character varying(50) null,
+  init_odds_away numeric(6, 3) null,
+  final_handicap character varying(50) null,
+  final_odds_home numeric(6, 3) null,
+  final_odds_away numeric(6, 3) null,
+  odds_detail jsonb null,
+  created_at timestamp without time zone null default now(),
+  constraint total_handicap_pkey primary key (id),
+  constraint total_handicap_match_id_bookmaker_key unique (match_id, bookmaker)
+) TABLESPACE pg_default;
 
-CREATE INDEX IF NOT EXISTS idx_total_handicap_match_id ON total_handicap(match_id);
-CREATE INDEX IF NOT EXISTS idx_total_handicap_bookmaker ON total_handicap(bookmaker);
--- ============================================================
--- 联合数据表：整合 betting_odds、league_matches、sax_encoding
--- 连接条件：match_id = schedule_id AND sax_encoding.bookmaker = betting_odds.bookmaker_name
--- ============================================================
+create index IF not exists idx_total_handicap_match_id on public.total_handicap using btree (match_id) TABLESPACE pg_default;
 
--- 联合视图：支持多庄家的赔率与 SAX 编码关联查询
-DROP TABLE IF EXISTS public.v_match_odds_sax;
-
-CREATE TABLE public.v_match_odds_sax AS
-SELECT
-  bo.schedule_id AS match_id,
-  bo.bookmaker_name,
-  lm.league_name,
-  lm.match_time,
-  lm.home_team_name,
-  lm.away_team_name,
-  lm.final_score,
-  bo.init_win,
-  bo.init_draw,
-  bo.init_lose,
-  bo.init_return,
-  bo.final_win,
-  bo.final_draw,
-  bo.final_lose,
-  bo.final_return,
-  bs.sax_interleaved,
-  bs.sax_delta,
-  bs.home_mean,
-  bs.draw_mean,
-  bs.away_mean,
-  lm.season,
-  lm.round
-FROM public.betting_odds bo
-INNER JOIN public.sax_encoding bs
-  ON bo.schedule_id = bs.match_id
-  AND bo.bookmaker_name = bs.bookmaker
-LEFT JOIN public.league_matches lm
-  ON bo.schedule_id = lm.match_id;
-
--- 创建索引加速查询
-CREATE INDEX IF NOT EXISTS idx_v_match_odds_sax_match_id ON v_match_odds_sax(match_id);
-CREATE INDEX IF NOT EXISTS idx_v_match_odds_sax_bookmaker ON v_match_odds_sax(bookmaker_name);
-CREATE INDEX IF NOT EXISTS idx_v_match_odds_sax_sax ON v_match_odds_sax(sax_interleaved, sax_delta);
-CREATE INDEX IF NOT EXISTS idx_v_match_odds_sax_season ON v_match_odds_sax(season);
-CREATE INDEX IF NOT EXISTS idx_v_match_odds_sax_league ON v_match_odds_sax(league_name);
+create index IF not exists idx_total_handicap_bookmaker on public.total_handicap using btree (bookmaker) TABLESPACE pg_default;
 
 -- ============================================================
 -- 实体表：SAX 编码结果
 -- ============================================================
-CREATE TABLE IF NOT EXISTS public.sax_encoding (
-  id BIGSERIAL PRIMARY KEY,
-  bookmaker VARCHAR(50) NOT NULL,
-  match_id BIGINT NOT NULL,
-  hometeam VARCHAR(100),
-  guestteam VARCHAR(100),
-  season VARCHAR(20),
-  sax_interleaved VARCHAR(100),
-  sax_delta VARCHAR(100),
-  home_mean NUMERIC(6, 3),
-  draw_mean NUMERIC(6, 3),
-  away_mean NUMERIC(6, 3),
-  running_odds_count INTEGER,
-  created_at TIMESTAMP DEFAULT NOW(),
-  UNIQUE(bookmaker, match_id)
-);
+create table public.sax_encoding (
+  id bigserial not null,
+  bookmaker character varying(50) not null,
+  match_id bigint not null,
+  hometeam character varying(100) null,
+  guestteam character varying(100) null,
+  season character varying(20) null,
+  sax_interleaved character varying(100) null,
+  sax_delta character varying(100) null,
+  home_mean numeric(6, 3) null,
+  draw_mean numeric(6, 3) null,
+  away_mean numeric(6, 3) null,
+  running_odds_count integer null,
+  created_at timestamp without time zone null default now(),
+  constraint sax_encoding_pkey primary key (id),
+  constraint sax_encoding_bookmaker_match_id_key unique (bookmaker, match_id)
+) TABLESPACE pg_default;
 
-CREATE INDEX IF NOT EXISTS idx_sax_encoding_bookmaker ON sax_encoding(bookmaker);
-CREATE INDEX IF NOT EXISTS idx_sax_encoding_match_id ON sax_encoding(match_id);
-CREATE INDEX IF NOT EXISTS idx_sax_encoding_season ON sax_encoding(season);
+create index IF not exists idx_sax_encoding_bookmaker on public.sax_encoding using btree (bookmaker) TABLESPACE pg_default;
+
+create index IF not exists idx_sax_encoding_match_id on public.sax_encoding using btree (match_id) TABLESPACE pg_default;
+
+create index IF not exists idx_sax_encoding_season on public.sax_encoding using btree (season) TABLESPACE pg_default;
 
 -- ============================================================
 -- 实体表：投注赔率
 -- ============================================================
-CREATE TABLE public.betting_odds (
-  id bigint NOT NULL DEFAULT nextval('betting_odds_id_seq'::regclass),
-  schedule_id bigint NOT NULL,
-  bookmaker_name character varying NOT NULL,
-  init_win numeric,
-  init_draw numeric,
-  init_lose numeric,
-  init_return numeric,
-  final_win numeric,
-  final_draw numeric,
-  final_lose numeric,
-  final_return numeric,
-  kelly_win numeric,
-  kelly_draw numeric,
-  kelly_lose numeric,
-  created_at timestamp without time zone DEFAULT now(),
-  CONSTRAINT betting_odds_pkey PRIMARY KEY (id)
-);
+create table public.betting_odds (
+  id bigserial not null,
+  schedule_id bigint not null,
+  bookmaker_name character varying(50) not null,
+  init_win numeric(5, 2) null,
+  init_draw numeric(5, 2) null,
+  init_lose numeric(5, 2) null,
+  init_return numeric(5, 2) null,
+  final_win numeric(5, 2) null,
+  final_draw numeric(5, 2) null,
+  final_lose numeric(5, 2) null,
+  final_return numeric(5, 2) null,
+  kelly_win numeric(5, 2) null,
+  kelly_draw numeric(5, 2) null,
+  kelly_lose numeric(5, 2) null,
+  created_at timestamp without time zone null default now(),
+  constraint betting_odds_pkey primary key (id),
+  constraint betting_odds_schedule_id_bookmaker_name_key unique (schedule_id, bookmaker_name)
+) TABLESPACE pg_default;
+
+create index IF not exists idx_betting_odds_schedule on public.betting_odds using btree (schedule_id) TABLESPACE pg_default;
+
+create index IF not exists idx_betting_odds_bookmaker on public.betting_odds using btree (bookmaker_name) TABLESPACE pg_default;
 
 -- ============================================================
 -- 实体表：联赛比赛
 -- ============================================================
-CREATE TABLE public.league_matches (
-  id bigint NOT NULL DEFAULT nextval('league_matches_id_seq'::regclass),
-  match_id bigint NOT NULL,
-  league_id integer,
-  league_name character varying,
-  season character varying,
-  round integer,
-  match_time timestamp without time zone,
-  home_team_id integer,
-  home_team_name character varying,
-  away_team_id integer,
-  away_team_name character varying,
-  final_score character varying,
-  half_score character varying,
-  created_at timestamp without time zone DEFAULT now(),
-  CONSTRAINT league_matches_pkey PRIMARY KEY (match_id)
-);
+create table public.league_matches (
+  id bigserial not null,
+  match_id bigint not null,
+  league_id integer null,
+  league_name character varying(50) null,
+  season character varying(10) null,
+  round integer null,
+  match_time timestamp without time zone null,
+  home_team_id integer null,
+  home_team_name character varying(100) null,
+  away_team_id integer null,
+  away_team_name character varying(100) null,
+  final_score character varying(10) null,
+  half_score character varying(10) null,
+  created_at timestamp without time zone null default now(),
+  constraint league_matches_pkey primary key (match_id),
+  constraint league_matches_match_id_league_id_key unique (match_id, league_id)
+) TABLESPACE pg_default;
+
+create index IF not exists idx_league_matches_league_season on public.league_matches using btree (league_id, season) TABLESPACE pg_default;
+
+create index IF not exists idx_league_matches_round on public.league_matches using btree (league_id, season, round) TABLESPACE pg_default;
+
+create index IF not exists idx_league_matches_match_time on public.league_matches using btree (match_time) TABLESPACE pg_default;
