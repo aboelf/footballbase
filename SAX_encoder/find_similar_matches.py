@@ -96,7 +96,16 @@ def mindist_sax(s1: str, s2: str, word_size: int, alphabet_size: int) -> float:
         if n1 == n2:
             return 0.0
 
-        # 相邻符号之间的距离为 0
+        # 相邻符号之间使用较小的距离（非零）
+        if abs(n1 - n2) == 1:
+            # 计算相邻符号之间的断点距离的一半作为最小距离
+            min_idx = min(n1, n2)
+            if min_idx < len(breakpoints):
+                b = breakpoints[min_idx]
+                if min_idx > 0:
+                    b_prev = breakpoints[min_idx - 1]
+                    return ((b - b_prev) ** 2) / 4
+            return 0.01  # 默认小距离
         if abs(n1 - n2) == 1:
             return 0.0
 
@@ -747,6 +756,7 @@ def find_similar_matches(
                 "item_home": item_home,
                 "item_draw": item_draw,
                 "item_away": item_away,
+                "final_score": item.get("final_score", ""),
             }
         )
 
@@ -982,11 +992,6 @@ def main():
         alphabet_size=alphabet_size,
         config_path=sax_config_path,
     )
-    encoder = SAXEncoder(
-        word_size=word_size,
-        alphabet_size=alphabet_size,
-        config_path=sax_config_path,
-    )
 
     home, draw, away = extract_odds_series(match_odds)
 
@@ -1119,20 +1124,47 @@ def main():
                 odds_label = "均赔(胜/平/负)"
 
             print(f"\n找到 {len(similar_matches)} 场最相似的比赛:")
-            print("-" * 60)
+            print("-" * 75)
             print(
-                f"{'排名':<4} {'比赛ID':<12} {'交错编码':<20} {'距离':<8} {odds_label:<20}"
+                f"{'排名':<4} {'比赛ID':<12} {'交错编码':<16} {'距离':<8} {'结果':<8} {odds_label:<20}"
             )
-            print("-" * 60)
+            print("-" * 75)
 
             for i, match in enumerate(similar_matches, 1):
+                final_score = match.get('final_score', '')
                 print(
-                    f"{i:<4} {match['match_id']:<12} {match['sax_interleaved']:<20} "
+                    f"{i:<4} {match['match_id']:<12} {match['sax_interleaved']:<16} "
                     f"{match['combined_dist']:.4f} "
+                    f"{final_score:<8} "
                     f"{match['item_home']:.2f}/{match['item_draw']:.2f}/{match['item_away']:.2f}"
                 )
 
-            print("-" * 60)
+            print("-" * 75)
+
+            # 统计结果
+            win_count = 0
+            draw_count = 0
+            loss_count = 0
+            for match in similar_matches:
+                final_score = match.get('final_score', '')
+                if final_score and '-' in final_score:
+                    try:
+                        parts = final_score.split('-')
+                        home_goals = int(parts[0])
+                        away_goals = int(parts[1])
+                        if home_goals > away_goals:
+                            win_count += 1
+                        elif home_goals == away_goals:
+                            draw_count += 1
+                        else:
+                            loss_count += 1
+                    except (ValueError, IndexError):
+                        pass
+
+            print(f"\n结果统计: 胜 {win_count} 场, 平 {draw_count} 场, 负 {loss_count} 场")
+            if win_count + draw_count + loss_count > 0:
+                total = win_count + draw_count + loss_count
+                print(f"         胜率: {win_count/total*100:.1f}%, 平率: {draw_count/total*100:.1f}%, 负率: {loss_count/total*100:.1f}%")
 
     except ValueError as e:
         print(f"\n配置错误: {e}")
