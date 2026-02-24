@@ -432,7 +432,9 @@ def upload_to_supabase(records: list[dict], batch_size: int = 100) -> int:
     for i in range(0, len(records), batch_size):
         batch = records[i : i + batch_size]
         try:
-            result = table.upsert(batch, on_conflict="match_id,bookmaker").execute()
+            result = table.upsert(
+                batch, on_conflict="match_id,bookmaker", upsert=False
+            ).execute()
             if result is not None:
                 total += len(batch)
             print(f"    已上传: {total}/{len(records)}")
