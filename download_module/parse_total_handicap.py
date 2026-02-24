@@ -432,8 +432,11 @@ def upload_to_supabase(records: list[dict], batch_size: int = 100) -> int:
     for i in range(0, len(records), batch_size):
         batch = records[i : i + batch_size]
         try:
+            # 使用 upsert + on_conflict 跳过已存在的记录
             result = table.upsert(
-                batch, on_conflict="match_id,bookmaker", upsert=False
+                batch,
+                on_conflict="match_id,bookmaker",
+                ignore_duplicates=True
             ).execute()
             if result is not None:
                 total += len(batch)
@@ -443,6 +446,33 @@ def upload_to_supabase(records: list[dict], batch_size: int = 100) -> int:
             errors += len(batch)
 
     return total
+
+
+def get_existing_match_ids() -> set[int]:
+    """
+    从 Supabase total_handicap 表获取所有已存在的 match_id
+    
+    Returns:
+        set[int]: 已存在的 match_id 集合
+    """
+    client = get_supabase_client()
+    table = client.table("total_handicap")
+    
+    try:
+        # 只查询 match_id 列，避免获取大量不必要的数据
+        result = table.select("match_id").execute()
+        if result and hasattr(result, 'data') and result.data:
+            match_ids: set[int] = set()
+            for row in result.data:
+                if "match_id" in row:
+                    match_ids.add(int(row["match_id"]))
+            print(f"  数据库中已有 {len(match_ids)} 条 total_handicap 记录")
+            return match_ids
+        return set()
+    except Exception as e:
+        print(f"  警告: 查询数据库失败: {e}")
+        print(f"  将跳过已有记录检查，继续处理所有文件")
+        return set()
 
 
 def get_sql_schema() -> str:
@@ -474,6 +504,7 @@ def parse_directory(
     limit: Optional[int] = None,
     match_id: Optional[int] = None,
     dry_run: bool = False,
+    skip_existing: bool = True,
 ) -> list[dict]:
     """
     解析目录下所有 HTML 文件
@@ -483,6 +514,7 @@ def parse_directory(
         limit: 最多处理文件数
         match_id: 只处理指定比赛
         dry_run: 试运行模式
+        skip_existing: 是否跳过数据库中已存在的比赛
 
     Returns:
         所有解析后的记录
@@ -502,10 +534,29 @@ def parse_directory(
     # 按 match_id 排序
     html_files.sort(key=lambda x: int(re.match(r".*/(\d+)_total\.html", x).group(1)))
 
+    # 获取已存在的 match_id
+    existing_match_ids: set[int] = set()
+    if skip_existing and not match_id:
+        print("\n查询数据库已有记录...")
+        existing_match_ids = get_existing_match_ids()
+
+    # 过滤掉已存在的比赛
+    if existing_match_ids:
+        filtered_files = []
+        skipped_count = 0
+        for fp in html_files:
+            file_match_id = int(re.match(r".*/(\d+)_total\.html", fp).group(1))
+            if file_match_id in existing_match_ids:
+                skipped_count += 1
+            else:
+                filtered_files.append(fp)
+        print(f"  跳过 {skipped_count} 个已存在的比赛")
+        html_files = filtered_files
+
     if limit:
         html_files = html_files[:limit]
 
-    print(f"\n找到 {len(html_files)} 个 HTML 文件")
+    print(f"\n找到 {len(html_files)} 个 HTML 文件待处理")
     if match_id:
         print(f"  过滤: 只处理 match_id = {match_id}")
 
@@ -532,6 +583,7 @@ def parse_directory_parallel(
     dry_run: bool = False,
     workers: int = 8,
     quiet: bool = False,
+    skip_existing: bool = True,
 ) -> list[dict]:
     """
     并行解析目录下所有 HTML 文件
@@ -543,6 +595,7 @@ def parse_directory_parallel(
         dry_run: 试运行模式
         workers: 并行进程数
         verbose: 是否显示详细进度
+        skip_existing: 是否跳过数据库中已存在的比赛
 
     Returns:
         所有解析后的记录
@@ -558,11 +611,30 @@ def parse_directory_parallel(
             else:
                 html_files.append(os.path.join(input_dir, f))
 
+    # 获取已存在的 match_id
+    existing_match_ids: set[int] = set()
+    if skip_existing and not match_id:
+        print("\n查询数据库已有记录...")
+        existing_match_ids = get_existing_match_ids()
+
+    # 过滤掉已存在的比赛
+    if existing_match_ids:
+        filtered_files = []
+        skipped_count = 0
+        for fp in html_files:
+            file_match_id = int(re.match(r".*/(\d+)_total\.html", fp).group(1))
+            if file_match_id in existing_match_ids:
+                skipped_count += 1
+            else:
+                filtered_files.append(fp)
+        print(f"  跳过 {skipped_count} 个已存在的比赛")
+        html_files = filtered_files
+
     if limit:
         html_files = html_files[:limit]
 
     total_files = len(html_files)
-    print(f"\n找到 {total_files} 个 HTML 文件")
+    print(f"\n找到 {total_files} 个 HTML 文件待处理")
     print(f"  使用 {workers} 个并行进程")
 
     if match_id:
@@ -663,6 +735,11 @@ def main():
         action="store_true",
         help="静默模式，不显示进度",
     )
+    parser.add_argument(
+        "--no-skip-existing",
+        action="store_true",
+        help="不禁用跳过已存在记录（默认会跳过数据库中已有的比赛）",
+    )
 
     args = parser.parse_args()
 
@@ -674,6 +751,13 @@ def main():
     print("解析总亚盘数据")
     print("=" * 60)
     print(f"  输入目录: {args.input_dir}")
+    
+    # 显示跳过已存在记录的设置
+    skip_existing = not args.no_skip_existing
+    if skip_existing:
+        print(f"  跳过策略: 已存在于数据库的比赛将被跳过")
+    else:
+        print(f"  跳过策略: 不跳过已存在的比赛（--no-skip-existing）")
 
     # 检查输入目录
     if not os.path.exists(args.input_dir):
@@ -688,6 +772,7 @@ def main():
         dry_run=args.dry_run,
         workers=args.workers,
         quiet=args.quiet,
+        skip_existing=skip_existing,
     )
 
     if not records:
@@ -711,9 +796,12 @@ def main():
     # 如果是 dry_run，不上传
     if args.dry_run:
         print("\n[试运行模式] 不上传数据")
-        print("\n前 5 条记录示例:")
-        for r in records[:5]:
-            print(f"  {json.dumps(r, ensure_ascii=False)}")
+        if records:
+            skip_msg = "未" if args.no_skip_existing else ""
+            print(f"\n待上传 {len(records)} 条记录（已排除 {skip_msg}已存在的）")
+            print("\n前 5 条记录示例:")
+            for r in records[:5]:
+                print(f"  {json.dumps(r, ensure_ascii=False)}")
         return
 
     # 上传到 Supabase
