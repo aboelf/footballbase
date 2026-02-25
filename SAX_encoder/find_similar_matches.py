@@ -182,16 +182,18 @@ class SAXEncoder:
         return (series - mean) / std
 
     def _interpolate_to_length(self, series, target_length):
-        """插值到目标长度"""
+        """插值到目标长度（已标准化的数据）"""
         if len(series) == target_length:
             return np.array(series)
 
         if len(series) < target_length:
+            # 上采样：线性插值
             x = np.linspace(0, 1, len(series))
             x_new = np.linspace(0, 1, target_length)
             return np.interp(x_new, x, series)
         else:
-            return self._paa(series, target_length)
+            # 下采样：均匀采样（保持形状）
+            return self._simple_downsample(series, target_length)
 
     def _paa(self, series, target_length):
         """PAA 降维"""
@@ -224,16 +226,747 @@ class SAXEncoder:
         return self.alphabet[-1]
 
     def encode(self, series, interpolate_len=32):
-        """SAX 编码"""
+        """
+        SAX 编码
+        
+        注意: 输入数据应该已经是 Z-Score 标准化的，且长度固定为20点
+        这里只做必要的插值和符号映射，不重复标准化和PAA
+        """
         if len(series) < 2:
             return self.alphabet[0] * self.word_size
 
+        # 直接对已标准化的数据进行处理
+        # 1. 插值到目标长度（如果需要）
         interpolated = self._interpolate_to_length(series, interpolate_len)
-        normalized = self.normalize(interpolated)
-        paa = self._paa(normalized, self.word_size)
+        
+        # 2. 降维到 word_size（使用简单的均匀采样替代PAA，保持形状）
+        # 由于数据已经是20点标准化数据，直接均匀采样到word_size
+        paa = self._simple_downsample(interpolated, self.word_size)
+        
+        # 3. 映射到符号
         sax_string = "".join([self._map_to_symbol(v) for v in paa])
 
         return sax_string
+    
+    def _simple_downsample(self, series, target_length):
+        """
+        简单降维：均匀采样
+        
+        替代PAA，保持数据的原始形状特征
+        """
+        series = np.array(series, dtype=float)
+        n = len(series)
+        
+        if n == target_length:
+            return series
+        
+        # 均匀采样 indices
+        indices = np.linspace(0, n - 1, target_length, dtype=int)
+        return series[indices]
+
+
+# ============ 赔率数据预处理：时间对齐与重采样 ============
+
+
+from datetime import datetime, timedelta
+from typing import List, Dict, Tuple, Optional
+
+
+def parse_datetime(time_str: str, year_hint: int = None) -> Optional[datetime]:
+    """
+    解析各种格式的时间字符串
+    
+    支持格式:
+    - "2024-01-15 10:30:00"
+    - "2024/01/15 10:30"
+    - "01-15 10:30" (月-日 时:分)
+    - "02-21 22:45" (月-日 时:分，从详细记录)
+    - "2026,02-1,21,15,00,00" (年,月-日,时,分,秒) - 注意: 月-日 可能是 "月-日"
+    """
+    if not time_str:
+        return None
+    
+    import re
+    
+    # 处理详细记录格式: "02-21 22:45" (月-日 时:分)
+    match = re.match(r'(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2})', time_str)
+    if match:
+        month, day, hour, minute = match.groups()
+        year = year_hint if year_hint else datetime.now().year
+        try:
+            return datetime(year, int(month), int(day), int(hour), int(minute))
+        except ValueError:
+            pass
+    
+    # 处理特殊格式: "2026,02-1,21,15,00,00"
+    # 注意: 这里 "02-1" 可能是 "02-1" 即 2月1日，但实际应该是 2月21日
+    # 这个格式解析有误，暂时不使用
+    # 格式: 年,月-日,时,分,秒
+    # match = re.match(r'(\d{4}),(\d{1,2})-(\d{1,2}),(\d{1,2}),(\d{1,2}),(\d{1,2})', time_str)
+    # 实际上这个格式 "02-1" 更像是 "月份-日期" 但日期可能是1位数
+    # 从详细记录看应该是 "月-日" 格式，如 "02-21"
+    
+    # 尝试解析: 年,月-日,时:分:秒
+    match = re.match(r'(\d{4}),(\d{1,2})-(\d{1,2}),(\d{1,2}):(\d{1,2}):(\d{1,2})', time_str)
+    if match:
+        try:
+            year, month, day, hour, minute, second = match.groups()
+            # 这里 day=1 可能是日期，需要结合实际数据修正
+            dt = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
+            # 如果解析出的日期与详细记录不符，需要修正
+            # 从详细记录我们知道比赛是2月21日
+            # 这里先按解析结果返回，后续可修正
+            return dt
+        except ValueError:
+            pass
+    
+    formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S.%f",
+    ]
+    
+    for fmt in formats:
+        try:
+            return datetime.strptime(time_str.strip(), fmt)
+        except ValueError:
+            continue
+    
+    return None
+
+
+def parse_match_time_from_detail(match_time_str: str, odds_records_times: list = None) -> datetime:
+    """
+    从比赛时间字符串和赔率记录时间推断正确的比赛时间
+    
+    titan007 的 MatchTime 格式: "2026,02-1,11,19,40,00" -> 2026年2月11日19:40:00
+    格式: year, month-day, day, hour, minute, second
+    注意: "02-1" 实际上是 "month-day" 但day可能是1位数
+    
+    Args:
+        match_time_str: MatchTime 字段值
+        odds_records_times: 详细赔率记录的时间列表（已解析的datetime）
+        
+    Returns:
+        修正后的比赛时间 (北京时间)
+    """
+    import re
+    
+    # 尝试解析 "2026,02-1,11,19,40,00" 格式
+    # 关键: 用 (\d+-\d+) 捕获完整的 "02-1" 而不是 (\d+)-(\d+)
+    match = re.match(r'(\d+),(\d+-\d+),(\d+),(\d+),(\d+),(\d+)', match_time_str)
+    if match:
+        try:
+            year = int(match.group(1))
+            month_day = match.group(2)  # "02-1" or "02-21"
+            day = int(match.group(3))   # "11"
+            hour = int(match.group(4))
+            minute = int(match.group(5))
+            second = int(match.group(6))
+            
+            # 解析月份
+            md = month_day.split('-')
+            month = int(md[0])
+            
+            # JS数据时间是UTC，需要+8小时转北京时间
+            utc_time = datetime(year, month, day, hour, minute, second)
+            beijing_time = utc_time + timedelta(hours=8)
+            return beijing_time
+        except (ValueError, AttributeError):
+            pass
+    
+    # 方法2: 直接解析标准格式
+    parsed = parse_datetime(match_time_str)
+    if parsed:
+        return parsed
+    
+    # 方法3: 从赔率记录最后一条推断（备用）
+    if odds_records_times and len(odds_records_times) > 0:
+        last_time = max(odds_records_times)
+        # 假设比赛在最后一次赔率变化后15分钟左右
+        return last_time + timedelta(minutes=15)
+    
+    raise ValueError(f"无法解析比赛时间: {match_time_str}")
+
+
+def odds_to_implied_probability(odds: float) -> float:
+    """
+    赔率转换为隐含胜率（未扣返还率）
+    
+    Args:
+        odds: 赔率值 (如 2.10)
+        
+    Returns:
+        隐含胜率 (如 0.476)
+    """
+    if not odds or odds <= 0:
+        return 0.0
+    return 1.0 / odds
+
+
+def odds_to_real_probability(home_odds: float, draw_odds: float, away_odds: float) -> Tuple[float, float, float]:
+    """
+    赔率转换为真实胜率（扣除返还率）
+    
+    计算步骤:
+    1. 先算隐含概率: p = 1/odds
+    2. 计算三项总和: total = p_home + p_draw + p_away
+    3. 真实概率: real_p = p / total
+    
+    Args:
+        home_odds: 主胜赔率 (如 1.75)
+        draw_odds: 平局赔率 (如 3.70)
+        away_odds: 客胜赔率 (如 4.33)
+        
+    Returns:
+        (real_home, real_draw, real_away): 真实胜率
+        
+    Example:
+        1.75, 3.70, 4.33
+        → 隐含: 0.5714, 0.2703, 0.2309
+        → 总和: 1.0726
+        → 真实: 0.533, 0.252, 0.215
+    """
+    if not home_odds or not draw_odds or not away_odds:
+        return 0.0, 0.0, 0.0
+    if home_odds <= 0 or draw_odds <= 0 or away_odds <= 0:
+        return 0.0, 0.0, 0.0
+    
+    # 隐含概率
+    implied_home = 1.0 / home_odds
+    implied_draw = 1.0 / draw_odds
+    implied_away = 1.0 / away_odds
+    
+    # 三项总和（返还率）
+    total = implied_home + implied_draw + implied_away
+    
+    if total <= 0:
+        return 0.0, 0.0, 0.0
+    
+    # 真实概率
+    real_home = implied_home / total
+    real_draw = implied_draw / total
+    real_away = implied_away / total
+    
+    return real_home, real_draw, real_away
+
+
+def resample_odds_to_fixed_timeline(
+    running_odds: list,
+    match_time: str,
+    initial_odds: Tuple[float, float, float] = None,
+    time_step_minutes: int = 10,
+    pre_match_hours: int = 48,
+) -> Dict[str, List[float]]:
+    """
+    赔率数据时间对齐与重采样
+    
+    时间轴分段:
+    1. 开盘: 第一个赔率
+    2. 开盘到赛前48小时: 赔率均值（时间加权）
+    3. 赛前48小时到开赛: 每10分钟一个数据点
+    
+    Args:
+        running_odds: 赔率变化记录列表 [{home, draw, away, time}, ...]
+        match_time: 比赛时间 (字符串)
+        initial_odds: (可选) 初始赔率 (home, draw, away)
+        time_step_minutes: 时间步长（分钟），默认10
+        pre_match_hours: 赛前多少小时开始详细采样，默认48
+        
+    Returns:
+        {
+            'home': [开盘胜率, 48小时均值, 47小时50分, 47小时40分, ..., 开赛胜率],
+            'draw': [...],
+            'away': [...]
+        }
+    """
+    # 解析比赛时间（使用新函数修正）
+    # 先收集详细记录的时间
+    odds_times_for_match = []
+    for record in running_odds:
+        rt = parse_datetime(record.time)
+        if rt:
+            odds_times_for_match.append(rt)
+    
+    # 使用修正后的比赛时间
+    kickoff = parse_match_time_from_detail(match_time, odds_times_for_match)
+    if not kickoff:
+        print(f"  警告: 无法解析比赛时间 {match_time}")
+        return {'home': [], 'draw': [], 'away': []}
+    
+    print(f"  修正后的比赛时间: {kickoff}")
+    
+    # 解析赔率变化记录
+    odds_records = []
+    for record in running_odds:
+        # 使用带年份提示的解析
+        record_time = parse_datetime(record.time, year_hint=kickoff.year)
+        if not record_time:
+            continue
+        
+        # 处理年份：如果没有解析出年份，使用比赛年份
+        if record_time.year == 1900 or record_time.year == 1:
+            record_time = record_time.replace(year=kickoff.year)
+        
+        # 如果比比赛时间还晚，说明是去年
+        if record_time > kickoff:
+            record_time = record_time.replace(year=kickoff.year - 1)
+        
+        try:
+            home = float(record.home)
+            draw = float(record.draw)
+            away = float(record.away)
+            
+            # 计算真实胜率（扣除返还率）
+            real_home, real_draw, real_away = odds_to_real_probability(home, draw, away)
+            
+            odds_records.append({
+                'time': record_time,
+                'home': home,
+                'draw': draw,
+                'away': away,
+                'home_prob': real_home,
+                'draw_prob': real_draw,
+                'away_prob': real_away,
+            })
+        except (ValueError, TypeError):
+            continue
+    
+    if not odds_records:
+        print("  警告: 无有效的赔率记录")
+        return {'home': [], 'draw': [], 'away': []}
+    
+    # 按时间排序
+    odds_records.sort(key=lambda x: x['time'])
+    
+    earliest = odds_records[0]['time']
+    cutoff_48h = kickoff - timedelta(hours=pre_match_hours)
+    
+    print(f"  最早赔率时间: {earliest}")
+    print(f"  赛前48小时截止: {cutoff_48h}")
+    print(f"  比赛时间: {kickoff}")
+    print(f"  有效记录数: {len(odds_records)}")
+    
+    # ========== 第一部分: 开盘赔率 ==========
+    first_record = odds_records[0]
+    opening_odds = {
+        'home': first_record['home_prob'],
+        'draw': first_record['draw_prob'],
+        'away': first_record['away_prob'],
+    }
+    print(f"  开盘胜率: {opening_odds['home']:.3f}")
+    
+    # ========== 第二部分: 开盘到赛前48小时均值（时间加权）===========
+    early_records = [r for r in odds_records if r['time'] <= cutoff_48h]
+    
+    if len(early_records) >= 2:
+        # 时间加权均值
+        total_weight = 0.0
+        weighted_home = 0.0
+        weighted_draw = 0.0
+        weighted_away = 0.0
+        
+        for i in range(1, len(early_records)):
+            # 权重 = 持续时间（小时）
+            duration = (early_records[i]['time'] - early_records[i-1]['time']).total_seconds() / 3600
+            if duration <= 0:
+                duration = 0.1  # 最小权重
+            
+            weighted_home += early_records[i]['home_prob'] * duration
+            weighted_draw += early_records[i]['draw_prob'] * duration
+            weighted_away += early_records[i]['away_prob'] * duration
+            total_weight += duration
+        
+        if total_weight > 0:
+            early_avg_odds = {
+                'home': weighted_home / total_weight,
+                'draw': weighted_draw / total_weight,
+                'away': weighted_away / total_weight,
+            }
+        else:
+            # 如果无法计算加权，使用简单均值
+            early_avg_odds = {
+                'home': sum(r['home_prob'] for r in early_records) / len(early_records),
+                'draw': sum(r['draw_prob'] for r in early_records) / len(early_records),
+                'away': sum(r['away_prob'] for r in early_records) / len(early_records),
+            }
+    else:
+        # 记录太少，使用最后一个可用值
+        early_avg_odds = {
+            'home': early_records[-1]['home_prob'] if early_records else opening_odds['home'],
+            'draw': early_records[-1]['draw_prob'] if early_records else opening_odds['draw'],
+            'away': early_records[-1]['away_prob'] if early_records else opening_odds['away'],
+        }
+    
+    print(f"  48小时均值胜率: {early_avg_odds['home']:.3f}")
+    
+    # ========== 第三部分: 赛前48小时到开赛，精简采样 ==========
+    # 方案A: 固定总点数，确保所有比赛时间轴一致
+    TARGET_POINTS = 20  # 目标总点数
+    
+    cutoff_24h = kickoff - timedelta(hours=24)
+    
+    # 找出所有赔率变化点 (只在24h内)
+    change_points = []
+    prev_home = early_avg_odds['home']
+    for record in odds_records:
+        if cutoff_24h < record['time'] <= kickoff:
+            if abs(record['home_prob'] - prev_home) > 0.001:  # 0.1%变化阈值
+                change_points.append(record['time'])
+                prev_home = record['home_prob']
+    
+    print(f"  24h内赔率变化点: {len(change_points)} 个")
+    
+    # ========== 构建时间轴 (固定策略) ==========
+    # 策略:
+    # - 开盘 + 48h均值 = 2个固定点 (在resampled中)
+    # - 48h~24h: 保留3个点 (每12h一个)
+    # - 24h~开赛: 保留15个点 (变化点优先，不足则均匀采样)
+    # - 开赛: 1个点
+    # 总计: 2 + 3 + 15 + 1 = 21 (接近目标)
+    
+    time_points = []
+    
+    # 开盘 (索引0)
+    # 48h均值 (索引1) - 已包含在resampled中
+    
+    # 48h ~ 24h: 每12小时 (3个点: 48h, 36h, 24h)
+    for hours in [48, 36, 24]:
+        time_points.append(kickoff - timedelta(hours=hours))
+    
+    # 24h ~ 开赛: 优先保留变化点，不足则均匀采样
+    # 先收集所有候选点
+    candidate_points = []
+    
+    # 24h内均匀采样点 (每2小时) - 覆盖整个24h范围
+    for hours in range(24, 0, -2):
+        candidate_points.append(('fixed', kickoff - timedelta(hours=hours)))
+    
+    # 添加变化点作为候选
+    for cp in change_points:
+        candidate_points.append(('change', cp))
+    
+    # 按时间排序
+    candidate_points.sort(key=lambda x: x[1])
+    
+    # 选择16个点: 优先选择变化点，不足则用均匀点
+    selected_change_points = [cp for t, cp in candidate_points if t == 'change']
+    selected_fixed_points = [cp for t, cp in candidate_points if t == 'fixed']
+    
+    # 选择变化点(优先) + 固定点(不足时补充)
+    final_24h_points = []
+    used_times = set()
+    
+    # 先选变化点
+    for cp in selected_change_points:
+        if len(final_24h_points) >= 12:  # 最多12个变化点
+            break
+        # 检查时间是否已存在
+        time_key = cp.strftime('%Y%m%d%H%M')
+        if time_key not in used_times:
+            final_24h_points.append(cp)
+            used_times.add(time_key)
+    
+    # 不足16个则用固定点补充
+    while len(final_24h_points) < 16 and selected_fixed_points:
+        fp = selected_fixed_points.pop(0)
+        time_key = fp.strftime('%Y%m%d%H%M')
+        if time_key not in used_times:
+            final_24h_points.append(fp)
+            used_times.add(time_key)
+    
+    # 按时间排序
+    final_24h_points.sort()
+    
+    # 添加到时间轴
+    for tp in final_24h_points:
+        time_points.append(tp)
+    
+    # 开赛时间
+    time_points.append(kickoff)
+    
+    # 去重并排序
+    time_points = sorted(list(set(time_points)))
+    
+    print(f"  精简后时间节点数: {len(time_points)}")
+    print(f"  - 48h~24h: {len([t for t in time_points if cutoff_48h <= t < cutoff_24h])} 个点")
+    print(f"  - 24h~开赛: {len([t for t in time_points if cutoff_24h <= t <= kickoff])} 个点")
+    
+    # 为每个时间点分配赔率（向后填充）
+    resampled = {
+        'home': [opening_odds['home'], early_avg_odds['home']],  # 开盘, 48小时均值
+        'draw': [opening_odds['draw'], early_avg_odds['draw']],
+        'away': [opening_odds['away'], early_avg_odds['away']],
+    }
+    
+    # 用于填充的当前赔率
+    current_odds = {
+        'home': early_avg_odds['home'],
+        'draw': early_avg_odds['draw'],
+        'away': early_avg_odds['away'],
+    }
+    
+    # 遍历时间点（从48小时前到开赛）
+    odds_idx = 0
+    for tp in time_points[1:]:  # 跳过第一个（48小时截止点已在resampled中）
+        # 找到该时间点之后的第一条记录
+        while odds_idx < len(odds_records) and odds_records[odds_idx]['time'] < tp:
+            current_odds = {
+                'home': odds_records[odds_idx]['home_prob'],
+                'draw': odds_records[odds_idx]['draw_prob'],
+                'away': odds_records[odds_idx]['away_prob'],
+            }
+            odds_idx += 1
+        
+        resampled['home'].append(current_odds['home'])
+        resampled['draw'].append(current_odds['draw'])
+        resampled['away'].append(current_odds['away'])
+    
+    print(f"  重采样后数据点数: home={len(resampled['home'])}, draw={len(resampled['draw'])}, away={len(resampled['away'])}")
+    print(f"  最终胜率: home={resampled['home'][-1]:.3f}, draw={resampled['draw'][-1]:.3f}, away={resampled['away'][-1]:.3f}")
+    
+    return resampled
+
+
+def get_interleaved_series(resampled_odds: Dict[str, List[float]]) -> List[float]:
+    """
+    将重采样后的赔率转换为交错序列
+    
+    Args:
+        resampled_odds: {'home': [...], 'draw': [...], 'away': [...]}
+        
+    Returns:
+        交错序列: [home0, draw0, away0, home1, draw1, away1, ...]
+    """
+    min_len = min(len(resampled_odds['home']), len(resampled_odds['draw']), len(resampled_odds['away']))
+    
+    interleaved = []
+    for i in range(min_len):
+        interleaved.append(resampled_odds['home'][i])
+        interleaved.append(resampled_odds['draw'][i])
+        interleaved.append(resampled_odds['away'][i])
+    
+    return interleaved
+
+
+def get_delta_series(resampled_odds: Dict[str, List[float]]) -> List[float]:
+    """
+    计算胜率差值序列 (主胜 - 客胜)
+    
+    Args:
+        resampled_odds: {'home': [...], 'draw': [...], 'away': [...]}
+        
+    Returns:
+        差值序列: [home0-away0, home1-away1, ...]
+    """
+    min_len = min(len(resampled_odds['home']), len(resampled_odds['away']))
+    
+    delta = []
+    for i in range(min_len):
+        delta.append(resampled_odds['home'][i] - resampled_odds['away'][i])
+    
+    return delta
+
+
+def z_score_normalize(series: List[float]) -> List[float]:
+    """
+    Z-Score 标准化
+    
+    公式: z = (x - μ) / σ
+    
+    作用: 消除赔率绝对值的影响，只保留波动的形状
+    - 主胜赔率从 1.2 变到 1.3，与从 5.0 变到 5.1，在绝对值上一样
+    - 但在博弈意义上，1.2→1.3 的变化比 5.0→5.1 重要得多
+    - Z-Score 标准化后，这些变化会被正确反映
+    
+    Args:
+        series: 原始数值序列
+        
+    Returns:
+        标准化后的序列，均值为0，标准差为1
+    """
+    import numpy as np
+    
+    arr = np.array(series, dtype=float)
+    mean = arr.mean()
+    std = arr.std()
+    
+    if std == 0:
+        # 防止除零，返回零中心化的序列
+        return (arr - mean).tolist()
+    
+    return ((arr - mean) / std).tolist()
+
+
+def normalize_odds_series(resampled_odds: Dict[str, List[float]]) -> Dict[str, List[float]]:
+    """
+    对赔率序列进行 Z-Score 标准化
+    
+    Args:
+        resampled_odds: {'home': [...], 'draw': [...], 'away': [...]}
+        
+    Returns:
+        标准化后的序列
+    """
+    return {
+        'home': z_score_normalize(resampled_odds['home']),
+        'draw': z_score_normalize(resampled_odds['draw']),
+        'away': z_score_normalize(resampled_odds['away']),
+    }
+
+
+# ============ 亚盘 SAX 编码器 ============
+
+
+def parse_handicap_odds_detail(odds_detail_json) -> tuple:
+    """
+    解析 odds_detail JSONB 数据，提取亚盘赔率序列
+
+    Args:
+        odds_detail_json: JSONB 格式的 odds_detail 数据
+
+    Returns:
+        (home_odds_list, away_odds_list, handicap_list): 三个列表
+    """
+    if not odds_detail_json:
+        return [], [], []
+
+    # 解析 JSONB 数据
+    if isinstance(odds_detail_json, str):
+        try:
+            detail_list = json.loads(odds_detail_json)
+        except json.JSONDecodeError:
+            return [], [], []
+    elif isinstance(odds_detail_json, list):
+        detail_list = odds_detail_json
+    else:
+        return [], [], []
+
+    if not detail_list:
+        return [], [], []
+
+    home_odds = []
+    away_odds = []
+    handicap_list = []
+
+    for item in detail_list:
+        if not isinstance(item, dict):
+            continue
+        home = item.get("home")
+        away = item.get("away")
+        handicap = item.get("handicap")
+
+        if home is not None and away is not None:
+            home_odds.append(float(home))
+            away_odds.append(float(away))
+            handicap_list.append(handicap)
+
+    return home_odds, away_odds, handicap_list
+
+
+def encode_handicap_sax(
+    encoder: SAXEncoder,
+    odds_detail_json,
+    interpolate_len: int = 32,
+) -> Optional[dict]:
+    """
+    对亚盘数据进行 SAX 编码
+
+    Args:
+        encoder: SAXEncoder 实例
+        odds_detail_json: JSONB 格式的 odds_detail 数据
+        interpolate_len: 插值长度
+
+    Returns:
+        dict: 包含 sax_home, sax_away, sax_diff, handicap_changes
+        None: 如果数据不足
+    """
+    home_odds, away_odds, handicap_list = parse_handicap_odds_detail(odds_detail_json)
+
+    if len(home_odds) < 2 or len(away_odds) < 2:
+        return None
+
+    # 编码主队赔率
+    sax_home = encoder.encode(home_odds, interpolate_len)
+
+    # 编码客队赔率
+    sax_away = encoder.encode(away_odds, interpolate_len)
+
+    # 编码差值 (主队 - 客队)
+    min_len = min(len(home_odds), len(away_odds))
+    diff_odds = [home_odds[i] - away_odds[i] for i in range(min_len)]
+    sax_diff = encoder.encode(diff_odds, interpolate_len)
+
+    # 计算盘口变化次数
+    handicap_changes = 0
+    if handicap_list:
+        prev = handicap_list[0]
+        for h in handicap_list[1:]:
+            if h != prev:
+                handicap_changes += 1
+                prev = h
+
+    return {
+        "sax_home": sax_home,
+        "sax_away": sax_away,
+        "sax_diff": sax_diff,
+        "handicap_changes": handicap_changes,
+        "home_count": len(home_odds),
+        "away_count": len(away_odds),
+    }
+
+
+def calculate_handicap_distance(
+    target_sax: dict,
+    item_sax: dict,
+    word_size: int,
+    alphabet_size: int,
+) -> float:
+    """
+    计算亚盘 SAX 距离
+
+    Args:
+        target_sax: 目标比赛的 SAX 编码
+        item_sax: 数据库比赛的 SAX 编码
+        word_size: SAX 分段数
+        alphabet_size: 字母表大小
+
+    Returns:
+        float: 综合距离
+    """
+    if not item_sax:
+        return float("inf")
+
+    # 主队赔率距离
+    dist_home = mindist_sax(
+        target_sax.get("sax_home", ""),
+        item_sax.get("sax_home", ""),
+        word_size,
+        alphabet_size,
+    )
+
+    # 客队赔率距离
+    dist_away = mindist_sax(
+        target_sax.get("sax_away", ""),
+        item_sax.get("sax_away", ""),
+        word_size,
+        alphabet_size,
+    )
+
+    # 差值距离
+    dist_diff = mindist_sax(
+        target_sax.get("sax_diff", ""),
+        item_sax.get("sax_diff", ""),
+        word_size,
+        alphabet_size,
+    )
+
+    # 综合距离 (平均)
+    combined = (dist_home + dist_away + dist_diff) / 3
+
+    return combined
 
 
 # ============ 数据下载 ============
@@ -477,13 +1210,13 @@ def get_supabase_client():
 
 
 def fetch_all_sax_data(client, bookmaker: str = "Bet 365") -> list[dict]:
-    """从 Supabase 获取指定庄家的 SAX 数据"""
+    """从 Supabase 获取指定庄家的 SAX 数据 (含亚盘)"""
     print(f"从 Supabase 获取 SAX 数据 (庄家: {bookmaker})...")
 
     try:
-        # 从视图获取指定庄家的数据
+        # 从视图获取指定庄家的数据 (含亚盘)
         result = (
-            client.table("v_match_odds_sax")
+            client.table("v_match_odds_sax_handicap")
             .select("*")
             .eq("bookmaker_name", bookmaker)
             .execute()
@@ -515,6 +1248,8 @@ def find_similar_matches(
     use_both_odds: bool = False,
     bookmaker: str = "Bet 365",
     use_dist: float = 0.5,
+    use_handicap: bool = False,
+    target_handicap_sax: Optional[dict] = None,
 ) -> list[dict]:
     """
     查找 SAX 编码最相似的比赛（带赔率筛选）
@@ -740,10 +1475,36 @@ def find_similar_matches(
             else float("inf")
         )
 
+        # 计算亚盘 SAX 距离
+        dist_handicap = 0.0
+        item_handicap_sax = None
+        if use_handicap and target_handicap_sax:
+            # 从数据库获取 odds_detail 并编码
+            odds_detail = item.get("odds_detail")
+            if odds_detail:
+                # 创建临时 encoder 用于亚盘
+                handicap_encoder = SAXEncoder(word_size=word_size, alphabet_size=alphabet_size)
+                item_handicap_sax = encode_handicap_sax(handicap_encoder, odds_detail)
+            
+            if item_handicap_sax:
+                dist_handicap = calculate_handicap_distance(
+                    target_handicap_sax, item_handicap_sax, word_size, alphabet_size
+                )
+            else:
+                dist_handicap = float("inf")
+
         # 综合距离（加权平均）
-        combined_dist = (
-            (dist_interleaved + dist_delta) / 2 if sax_delta else dist_interleaved
-        )
+        # 处理 dist_delta 为 infinity 的情况
+        if dist_delta == float("inf"):
+            eu_dist = dist_interleaved
+        else:
+            eu_dist = (dist_interleaved + dist_delta) / 2 if sax_delta else dist_interleaved
+        
+        if use_handicap and target_handicap_sax and dist_handicap != float("inf"):
+            # 欧赔距离占 60%，亚盘距离占 40%
+            combined_dist = eu_dist * 0.6 + dist_handicap * 0.4
+        else:
+            combined_dist = eu_dist
 
         similarities.append(
             {
@@ -752,11 +1513,19 @@ def find_similar_matches(
                 "sax_delta": sax_delta,
                 "dist_interleaved": dist_interleaved,
                 "dist_delta": dist_delta,
+                "dist_handicap": dist_handicap if use_handicap else None,
                 "combined_dist": combined_dist,
                 "item_home": item_home,
                 "item_draw": item_draw,
                 "item_away": item_away,
                 "final_score": item.get("final_score", ""),
+                # 亚盘数据
+                "init_handicap": item.get("init_handicap", ""),
+                "init_odds_home": item.get("init_odds_home"),
+                "init_odds_away": item.get("init_odds_away"),
+                "final_handicap": item.get("final_handicap", ""),
+                "final_odds_home": item.get("final_odds_home"),
+                "final_odds_away": item.get("final_odds_away"),
             }
         )
 
@@ -899,6 +1668,16 @@ def main():
         default=0.5,
         help="combined_dist 阈值，只保留距离小于等于该值的比赛（默认 0.5）",
     )
+    parser.add_argument(
+        "--use-handicap",
+        action="store_true",
+        help="使用亚盘数据进行筛选",
+    )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="不自动打开分析页面",
+    )
 
     args = parser.parse_args()
 
@@ -913,6 +1692,8 @@ def main():
     use_final_odds = args.use_final
     use_initial_odds = args.use_initial
     use_both_odds = args.use_both
+    use_handicap = args.use_handicap
+    no_open = args.no_open
     if not use_initial_odds and not use_final_odds and not use_both_odds:
         use_final_odds = True
     odds_tolerance_pct = args.tolerance
@@ -993,7 +1774,25 @@ def main():
         config_path=sax_config_path,
     )
 
-    home, draw, away = extract_odds_series(match_odds)
+    # 使用新的重采样函数，确保固定20点时间轴
+    resampled_odds = resample_odds_to_fixed_timeline(
+        match_odds.running_odds, 
+        match_odds.match_time
+    )
+    
+    if not resampled_odds or len(resampled_odds['home']) < 2:
+        print("错误: 赔率重采样失败，无法进行 SAX 编码")
+        sys.exit(1)
+    
+    # Z-Score 标准化 (消除赔率绝对值影响，保留波动形状)
+    normalized_odds = normalize_odds_series(resampled_odds)
+    
+    home = normalized_odds['home']
+    draw = normalized_odds['draw']
+    away = normalized_odds['away']
+
+    print(f"  重采样后数据点数: {len(home)}")
+    print(f"  Z-Score 标准化后: 均值≈0, 标准差≈1")
 
     # 交错拼接序列
     min_len = min(len(home), len(draw), len(away))
@@ -1050,6 +1849,105 @@ def main():
     )
     print(f"  编码参数: word_size={word_size}, alphabet_size={alphabet_size}")
 
+    # 尝试获取目标比赛的亚盘数据
+    target_handicap_sax = None
+    if use_handicap:
+        try:
+            client = get_supabase_client()
+            # 从数据库获取目标比赛的亚盘数据
+            result = (
+                client.table("v_match_odds_sax_handicap")
+                .select("odds_detail")
+                .eq("match_id", int(match_id))
+                .eq("bookmaker_name", bookmaker)
+                .execute()
+            )
+            has_handicap_data = False
+            if result.data and len(result.data) > 0:
+                first_item = result.data[0]
+                if isinstance(first_item, dict) and first_item.get("odds_detail"):
+                    handicap_encoder = SAXEncoder(word_size=word_size, alphabet_size=alphabet_size)
+                    target_handicap_sax = encode_handicap_sax(
+                        handicap_encoder, 
+                        first_item["odds_detail"],
+                        interpolate_len * 3
+                    )
+                    if target_handicap_sax:
+                        print(f"  亚盘编码: {target_handicap_sax['sax_home']}, {target_handicap_sax['sax_away']}, {target_handicap_sax['sax_diff']}")
+                        print(f"  亚盘变化次数: {target_handicap_sax['handicap_changes']}")
+                        has_handicap_data = True
+                    else:
+                        print("  警告: 目标比赛亚盘数据不足")
+                else:
+                    print("  警告: 目标比赛无亚盘数据")
+            else:
+                print("  警告: 目标比赛无亚盘数据")
+            
+            # 如果没有亚盘数据，下载并本地解析
+            if not has_handicap_data:
+                print(f"\n  正在下载亚盘数据...")
+                import subprocess
+                # 项目根目录
+                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                download_script = os.path.join(project_root, "download_module", "download_total_handicap.py")
+                output_dir = os.path.join(project_root, "rawdata", "odds", "total_handicap")
+                try:
+                    # 下载亚盘数据
+                    result = subprocess.run(
+                        [sys.executable, download_script, "--match-id", str(match_id), "--output-dir", output_dir],
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+                    if result.returncode == 0:
+                        print("  亚盘数据下载成功，正在解析...")
+                        # 本地解析（不上传到数据库）
+                        module_path = os.path.join(project_root, "download_module")
+                        sys.path.insert(0, module_path)
+                        
+                        try:
+                            from parse_total_handicap import parse_html_file
+                            
+                            html_dir = os.path.join(project_root, "rawdata", "odds", "total_handicap")
+                            html_file = os.path.join(html_dir, f"{match_id}_total.html")
+                            
+                            if os.path.exists(html_file):
+                                records = parse_html_file(html_file)
+                                # 找到对应庄家的数据
+                                bookmaker_key = "bet365" if bookmaker == "Bet 365" else "easybets" if bookmaker == "Easybets" else bookmaker.lower()
+                                for record in records:
+                                    if record.get("bookmaker") == bookmaker_key and record.get("odds_detail"):
+                                        handicap_encoder = SAXEncoder(word_size=word_size, alphabet_size=alphabet_size)
+                                        target_handicap_sax = encode_handicap_sax(
+                                            handicap_encoder, 
+                                            record["odds_detail"],
+                                            interpolate_len * 3
+                                        )
+                                        if target_handicap_sax:
+                                            print(f"  亚盘编码: {target_handicap_sax['sax_home']}, {target_handicap_sax['sax_away']}, {target_handicap_sax['sax_diff']}")
+                                            print(f"  亚盘变化次数: {target_handicap_sax['handicap_changes']}")
+                                            has_handicap_data = True
+                                            break
+                                if not has_handicap_data:
+                                    print("  警告: 解析后未找到对应庄家数据")
+                            else:
+                                print(f"  警告: HTML 文件不存在: {html_file}")
+                                
+                        except ImportError as e:
+                            print(f"  警告: 导入解析模块失败: {e}")
+                            use_handicap = False
+                            has_handicap_data = False
+                    else:
+                        print(f"  警告: 下载失败 - {result.stderr}")
+                except subprocess.TimeoutExpired:
+                    print("  警告: 下载超时")
+                except Exception as e:
+                    print(f"  警告: 下载/解析过程出错: {e}")
+                    
+        except Exception as e:
+            print(f"  警告: 获取亚盘数据失败: {e}")
+            use_handicap = False
+
     # 4. 从 Supabase 查找相似比赛
     print(f"\n[4/5] 从 Supabase 查找相似比赛")
 
@@ -1071,6 +1969,8 @@ def main():
                 use_both_odds=False,
                 bookmaker=bookmaker,
                 use_dist=use_dist,
+                use_handicap=use_handicap,
+                target_handicap_sax=target_handicap_sax,
             )
 
             similar_matches_initial = find_similar_matches(
@@ -1087,6 +1987,8 @@ def main():
                 use_both_odds=False,
                 bookmaker=bookmaker,
                 use_dist=use_dist,
+                use_handicap=use_handicap,
+                target_handicap_sax=target_handicap_sax,
             )
 
             combined = similar_matches_final + similar_matches_initial
@@ -1108,6 +2010,8 @@ def main():
                 use_both_odds=False,
                 bookmaker=bookmaker,
                 use_dist=use_dist,
+                use_handicap=use_handicap,
+                target_handicap_sax=target_handicap_sax,
             )
 
         if not similar_matches:
@@ -1124,22 +2028,54 @@ def main():
                 odds_label = "均赔(胜/平/负)"
 
             print(f"\n找到 {len(similar_matches)} 场最相似的比赛:")
-            print("-" * 75)
-            print(
-                f"{'排名':<4} {'比赛ID':<12} {'交错编码':<16} {'距离':<8} {'结果':<8} {odds_label:<20}"
-            )
-            print("-" * 75)
+            print("-" * 100)
+            # 根据是否使用亚盘显示不同表头
+            if use_handicap and target_handicap_sax:
+                print(
+                    f"{'排名':<4} {'比赛ID':<12} {'交错编码':<16} {'欧赔距离':<10} {'亚盘距离':<10} {'综合距离':<10} {'结果':<8} {odds_label:<20}"
+                )
+            else:
+                print(
+                    f"{'排名':<4} {'比赛ID':<12} {'交错编码':<16} {'距离':<8} {'结果':<8} {odds_label:<20} {'初盘亚盘':<15} {'终盘亚盘':<15}"
+                )
+            print("-" * 100)
 
             for i, match in enumerate(similar_matches, 1):
                 final_score = match.get('final_score', '')
-                print(
-                    f"{i:<4} {match['match_id']:<12} {match['sax_interleaved']:<16} "
-                    f"{match['combined_dist']:.4f} "
-                    f"{final_score:<8} "
-                    f"{match['item_home']:.2f}/{match['item_draw']:.2f}/{match['item_away']:.2f}"
-                )
+                # 亚盘数据
+                init_handicap = match.get('init_handicap', '') or ''
+                final_handicap = match.get('final_handicap', '') or ''
+                init_ah = f"{init_handicap} {match.get('init_odds_home', '')}/{match.get('init_odds_away', '')}" if init_handicap else '-'
+                final_ah = f"{final_handicap} {match.get('final_odds_home', '')}/{match.get('final_odds_away', '')}" if final_handicap else '-'
+                
+                if use_handicap and target_handicap_sax:
+                    # 显示欧赔距离、亚盘距离和综合距离
+                    dist_inter = match.get('dist_interleaved', 0) or 0
+                    dist_delta = match.get('dist_delta', 0)
+                    # 处理 infinity 的情况
+                    if dist_delta == float("inf"):
+                        eu_dist = dist_inter
+                    else:
+                        eu_dist = (dist_inter + dist_delta) / 2
+                    ah_dist = match.get('dist_handicap', 0) or 0
+                    if ah_dist == float("inf"):
+                        ah_dist = 0
+                    print(
+                        f"{i:<4} {match['match_id']:<12} {match['sax_interleaved']:<16} "
+                        f"{eu_dist:.4f}     {ah_dist:.4f}     {match['combined_dist']:.4f} "
+                        f"{final_score:<8} "
+                        f"{match['item_home']:.2f}/{match['item_draw']:.2f}/{match['item_away']:.2f}"
+                    )
+                else:
+                    print(
+                        f"{i:<4} {match['match_id']:<12} {match['sax_interleaved']:<16} "
+                        f"{match['combined_dist']:.4f} "
+                        f"{final_score:<8} "
+                        f"{match['item_home']:.2f}/{match['item_draw']:.2f}/{match['item_away']:.2f}"
+                        f" {init_ah:<15} {final_ah:<15}"
+                    )
 
-            print("-" * 75)
+            print("-" * 100)
 
             # 统计结果
             win_count = 0
@@ -1178,11 +2114,14 @@ def main():
         similar_matches = []
 
     # 5. 打开分析页面
-    print(f"\n[5/5] 打开分析页面")
-    if similar_matches:
-        open_analysis_pages(similar_matches)
+    if no_open:
+        print(f"\n[5/5] 跳过打开分析页面 (--no-open)")
     else:
-        print("  没有相似的比赛需要打开")
+        print(f"\n[5/5] 打开分析页面")
+        if similar_matches:
+            open_analysis_pages(similar_matches)
+        else:
+            print("  没有相似的比赛需要打开")
 
     print("\n" + "=" * 60)
     print("完成!")
