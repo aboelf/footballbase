@@ -1,265 +1,585 @@
 #!/usr/bin/env python3
 """
-3.run_sax.py - SAX编码主程序
+多庄家赔率 SAX 编码主入口
 
-使用预处理和Z-Score标准化后的数据进行SAX编码
-
-功能：
-- 从titan007下载赔率数据
-- 预处理：20点固定时间轴
-- Z-Score标准化
-- SAX编码
+新流程（预处理模式）:
+1. 预处理: resample_odds_to_fixed_timeline() - 20点固定时间线
+2. 预处理: normalize_odds_series() - Z-Score 标准化
+3. 编码: SAXEncoder.encode() - 简化的下采样（跳过重复Z-Score和PAA）
 
 使用方式:
-    python 3.run_sax.py 2789382
-    python 3.run_sax.py 2789379,2789380,2789381
-    python 3.run_sax.py --batch
+    python 3.run_sax.py --config-dir "./sax_config" --data-dir "./data"
 """
 
 import json
 import os
 import sys
+import glob
+from datetime import datetime
+from collections import Counter
+from typing import Dict, List, Optional, Tuple, Any, cast
 import argparse
 import numpy as np
-from typing import List, Dict, Optional
-from collections import Counter
 
-# 引用 find_similar_matches.py 中的函数
+# 导入新流程函数
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from find_similar_matches import (
-    download_match_data,
-    extract_bet365_odds,
     resample_odds_to_fixed_timeline,
     normalize_odds_series,
-    get_interleaved_series,
-    get_delta_series,
     SAXEncoder,
 )
 
 
-def process_single_match(match_id: str, config: dict = None) -> Optional[dict]:
+def find_bookmaker_configs(config_dir: str) -> Dict[str, str]:
+    """自动发现所有庄家配置文件"""
+    config_pattern = os.path.join(config_dir, "sax_config_*.json")
+    configs = {}
+    for config_path in glob.glob(config_pattern):
+        filename = os.path.basename(config_path)
+        # 从文件名提取庄家名: sax_config_bet_365.json -> bet_365
+        bookmaker = filename.replace("sax_config_", "").replace(".json", "")
+        configs[bookmaker] = config_path
+    return configs
+
+
+def find_data_files(data_dir: str) -> List[str]:
+    """自动发现所有数据文件"""
+    data_pattern = os.path.join(data_dir, "*_details.json")
+    files = glob.glob(data_pattern)
+    return sorted(files)
+
+
+def load_bookmaker_config(config_path: str) -> dict:
+    """加载庄家配置文件"""
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def extract_odds_series_from_bookmaker(
+    bookmaker_data: dict,
+) -> Optional[Tuple[List[float], List[float], List[float]]]:
     """
-    处理单场比赛，返回SAX编码结果
+    从庄家数据中提取赔率序列
 
     Args:
-        match_id: 比赛ID
-        config: SAX编码配置
+        bookmaker_data: 包含 runningOdds 的庄家数据
 
     Returns:
-        编码结果字典
+        (home_series, draw_series, away_series): 三个赔率序列，或 None
     """
-    # 加载配置
-    if config is None:
-        config = {
-            "word_size": 8,
-            "alphabet_size": 4,
-            "interpolate_len": 32,
+    running = bookmaker_data.get("runningOdds", [])
+    if not running:
+        return None
+
+    home, draw, away = [], [], []
+    for o in running:
+        try:
+            h = float(o["home"])
+            d = float(o["draw"])
+            a = float(o["away"])
+            # 过滤无效值（引号、0、负数等）
+            if h > 0 and d > 0 and a > 0:
+                home.append(h)
+                draw.append(d)
+                away.append(a)
+        except (ValueError, TypeError, KeyError):
+            continue
+
+    if len(home) < 2:
+        return None
+
+    return home, draw, away
+
+
+def extract_odds_series_from_match(
+    match: dict, bookmaker_name: Optional[str] = None
+) -> Optional[Tuple[List[float], List[float], List[float]]]:
+    """
+    从比赛数据中提取指定庄家的赔率序列
+
+    Args:
+        match: 比赛数据 dict
+        bookmaker_name: 庄家名称（可选，用于多庄家数据）
+
+    Returns:
+        (home_series, draw_series, away_series): 三个赔率序列，或 None
+    """
+    # 尝试从 bookmakers 数组中提取（多庄家格式）
+    if "bookmakers" in match and match["bookmakers"]:
+        bookmakers = match["bookmakers"]
+
+        if bookmaker_name:
+            # 查找指定庄家
+            for bm in bookmakers:
+                if bm.get("bookmakerName") == bookmaker_name:
+                    return extract_odds_series_from_bookmaker(bm)
+            return None
+        else:
+            # 返回第一个庄家
+            return extract_odds_series_from_bookmaker(bookmakers[0])
+
+    # 兼容旧格式：runningOdds 直接在 match 层
+    running = match.get("runningOdds", [])
+    if not running:
+        return None
+
+    home = [float(o["home"]) for o in running]
+    draw = [float(o["draw"]) for o in running]
+    away = [float(o["away"]) for o in running]
+
+    return home, draw, away
+
+
+def create_joint_series(
+    home: List[float], draw: List[float], away: List[float]
+) -> List[float]:
+    """创建联合序列（交错拼接）"""
+    min_len = min(len(home), len(draw), len(away))
+    joint = []
+    for i in range(min_len):
+        joint.append(home[i])
+        joint.append(draw[i])
+        joint.append(away[i])
+    return joint
+
+
+def create_delta_series(home: List[float], away: List[float]) -> List[float]:
+    """创建差值序列（主客队赔率差）"""
+    min_len = min(len(home), len(away))
+    return [home[i] - away[i] for i in range(min_len)]
+
+
+class MultiBookmakerSAXProcessor:
+    """多庄家 SAX 编码处理器"""
+
+    def __init__(self, config_dir: str, data_dir: str):
+        self.config_dir = config_dir
+        self.data_dir = data_dir
+        self.encoders: Dict[str, Dict[str, Any]] = {}  # 庄家名 -> {encoder, params}
+        self.configs: Dict[str, dict] = {}  # 庄家名 -> 配置
+
+    def load_all_configs(self):
+        """加载所有庄家配置文件"""
+        configs = find_bookmaker_configs(self.config_dir)
+        print(f"发现 {len(configs)} 个庄家配置文件:")
+        for bookmaker, config_path in configs.items():
+            config = load_bookmaker_config(config_path)
+            self.configs[bookmaker] = config
+            print(
+                f"  - {bookmaker}: strategy={config.get('strategy', 'individual')}, "
+                f"word_size={config.get('word_size')}, "
+                f"alphabet_size={config.get('alphabet_size')}, "
+                f"interpolate_len={config.get('interpolate_len')}"
+            )
+
+    @staticmethod
+    def normalize_bookmaker_name(name: str) -> str:
+        """标准化庄家名称：Bet 365 -> bet_365"""
+        return name.lower().replace(" ", "_")
+
+    def get_encoder(self, bookmaker: str):
+        """获取或创建指定庄家的编码器"""
+        if bookmaker not in self.encoders:
+            # 标准化名称用于匹配配置文件
+            normalized = self.normalize_bookmaker_name(bookmaker)
+            if normalized in self.configs:
+                config = self.configs[normalized]
+                config_path = os.path.join(
+                    self.config_dir, f"sax_config_{normalized}.json"
+                )
+                self.encoders[bookmaker] = {
+                    "encoder": self._create_encoder_from_config(config, config_path),
+                    "params": {
+                        "word_size": config.get("word_size", 8),
+                        "alphabet_size": config.get("alphabet_size", 7),
+                        "interpolate_len": config.get("interpolate_len", 32),
+                        "strategy": config.get("strategy", "individual"),
+                        "alphabet": None,
+                        "breakpoints": None,
+                    },
+                }
+                enc = self.encoders[bookmaker]["encoder"]
+                self.encoders[bookmaker]["params"]["alphabet"] = enc.alphabet
+                self.encoders[bookmaker]["params"]["breakpoints"] = (
+                    enc.breakpoints.round(3).tolist()
+                )
+            else:
+                # 使用默认参数
+                self.encoders[bookmaker] = {
+                    "encoder": self._create_encoder_from_config({}, None),
+                    "params": {
+                        "word_size": 8,
+                        "alphabet_size": 7,
+                        "interpolate_len": 32,
+                        "strategy": "individual",
+                        "alphabet": None,
+                        "breakpoints": None,
+                    },
+                }
+                enc = self.encoders[bookmaker]["encoder"]
+                self.encoders[bookmaker]["params"]["alphabet"] = enc.alphabet
+                self.encoders[bookmaker]["params"]["breakpoints"] = (
+                    enc.breakpoints.round(3).tolist()
+                )
+
+        return self.encoders[bookmaker]
+
+    def _create_encoder_from_config(self, config: dict, config_path: Optional[str]):
+        """根据配置创建 SAX 编码器（使用新流程）"""
+        if config_path and os.path.exists(config_path):
+            return SAXEncoder(config_path=config_path)
+        else:
+            return SAXEncoder(
+                word_size=config.get("word_size", 8),
+                alphabet_size=config.get("alphabet_size", 7),
+            )
+
+    def preprocess_odds(self, home: List[float], draw: List[float], away: List[float], 
+                         match_time: str) -> Tuple[List[float], List[float], List[float]]:
+        """
+        预处理赔率数据：新流程
+        1. 均匀采样到20点固定时间线
+        2. Z-Score 标准化
+        
+        注：JSON文件数据没有时间戳，使用简单的均匀采样+标准化
+        """
+        return self._simple_preprocess(home, draw, away)
+
+    def _simple_preprocess(self, home: List[float], draw: List[float], away: List[float]) -> Tuple[List[float], List[float], List[float]]:
+        """简单的预处理：均匀采样到20点 + Z-Score 标准化"""
+        import numpy as np
+        
+        def resample_to_20(series):
+            arr = np.array(series)
+            if len(arr) < 2:
+                return []
+            if len(arr) == 20:
+                return arr.tolist()
+            # 均匀采样
+            indices = np.linspace(0, len(arr) - 1, 20).astype(int)
+            return arr[indices].tolist()
+        
+        home_20 = resample_to_20(home)
+        draw_20 = resample_to_20(draw)
+        away_20 = resample_to_20(away)
+        
+        if not home_20:
+            return [], [], []
+        
+        # Z-Score 标准化
+        from find_similar_matches import z_score_normalize
+        
+        return (
+            z_score_normalize(home_20),
+            z_score_normalize(draw_20),
+            z_score_normalize(away_20)
+        )
+
+    def process_match_individual(self, match: dict, bookmaker: str):
+        """处理比赛 - 分别编码方案（新流程：预处理 + 简化SAX）"""
+        result = extract_odds_series_from_match(match, bookmaker)
+        if result is None:
+            return None
+        home, draw, away = result
+
+        encoder_data = self.get_encoder(bookmaker)
+        encoder = encoder_data["encoder"]
+        params = encoder_data["params"]
+
+        # 新流程预处理
+        match_time = match.get("matchTime", "")
+        home_norm, draw_norm, away_norm = self.preprocess_odds(home, draw, away, match_time)
+
+        # 简化的SAX编码（跳过重复Z-Score和PAA）
+        # 使用20点固定长度
+        return {
+            "scheduleId": match.get("scheduleId"),
+            "hometeam": match.get("hometeam"),
+            "guestteam": match.get("guestteam"),
+            "matchTime": match_time,
+            "season": match.get("season"),
+            "bookmaker": bookmaker,
+            "sax_home": encoder.encode(home_norm, 20),
+            "sax_draw": encoder.encode(draw_norm, 20),
+            "sax_away": encoder.encode(away_norm, 20),
+            "stats": {
+                "home_mean": round(float(np.mean(home)), 3),  # type: ignore
+                "draw_mean": round(float(np.mean(draw)), 3),  # type: ignore
+                "away_mean": round(float(np.mean(away)), 3),  # type: ignore
+                "home_std": round(float(np.std(home)), 3),  # type: ignore
+                "draw_std": round(float(np.std(draw)), 3),  # type: ignore
+                "away_std": round(float(np.std(away)), 3),  # type: ignore
+                "running_odds_count": len(home),
+            },
         }
 
-    # 下载数据
-    content = download_match_data(match_id)
-    if not content:
-        print(f"  错误: 无法下载比赛 {match_id} 的数据")
-        return None
+    def process_match_joint(self, match: dict, bookmaker: str):
+        """处理比赛 - 联合编码方案（新流程：预处理 + 简化SAX）"""
+        result = extract_odds_series_from_match(match, bookmaker)
+        if result is None:
+            return None
+        home, draw, away = result
 
-    # 提取赔率
-    match_odds = extract_bet365_odds(content)
-    if not match_odds:
-        print(f"  错误: 无法提取比赛 {match_id} 的赔率")
-        return None
+        encoder_data = self.get_encoder(bookmaker)
+        encoder = encoder_data["encoder"]
+        params = encoder_data["params"]
+        strategy = params.get("strategy", "individual")
+        
+        # 新流程预处理
+        match_time = match.get("matchTime", "")
+        home_norm, draw_norm, away_norm = self.preprocess_odds(home, draw, away, match_time)
 
-    # 预处理：20点固定时间轴
-    resampled = resample_odds_to_fixed_timeline(
-        match_odds.running_odds, match_odds.match_time
-    )
-    if not resampled or len(resampled["home"]) < 2:
-        print(f"  错误: 比赛 {match_id} 预处理失败")
-        return None
+        # 根据strategy生成不同的编码
+        if strategy == "interleaved":
+            # 使用交错拼接编码
+            joint_series = create_joint_series(home_norm, draw_norm, away_norm)
+            sax_interleaved = encoder.encode(joint_series, 60)  # 20点 * 3
 
-    # Z-Score 标准化
-    normalized = normalize_odds_series(resampled)
-
-    # 创建编码器
-    encoder = SAXEncoder(
-        word_size=config.get("word_size", 8),
-        alphabet_size=config.get("alphabet_size", 4),
-    )
-
-    # 生成序列
-    interleaved = get_interleaved_series(normalized)
-    delta = get_delta_series(normalized)
-
-    # SAX编码
-    interpolate_len = config.get("interpolate_len", 32)
-    sax_interleaved = encoder.encode(interleaved, interpolate_len * 3)
-    sax_delta = encoder.encode(delta, interpolate_len)
-
-    return {
-        "match_id": match_id,
-        "home_team": match_odds.hometeam,
-        "away_team": match_odds.guestteam,
-        "match_time": match_odds.match_time,
-        "initial_odds": {
-            "home": match_odds.initial_odds_home,
-            "draw": match_odds.initial_odds_draw,
-            "away": match_odds.initial_odds_away,
-        },
-        "final_odds": {
-            "home": match_odds.final_odds_home,
-            "draw": match_odds.final_odds_draw,
-            "away": match_odds.final_odds_away,
-        },
-        "raw_records": len(match_odds.running_odds),
-        "resampled_points": len(resampled["home"]),
-        "sax_interleaved": sax_interleaved,
-        "sax_delta": sax_delta,
-        "stats": {
-            "home_mean": float(np.mean(resampled["home"])),
-            "draw_mean": float(np.mean(resampled["draw"])),
-            "away_mean": float(np.mean(resampled["away"])),
-            "home_final": float(resampled["home"][-1]),
-            "draw_final": float(resampled["draw"][-1]),
-            "away_final": float(resampled["away"][-1]),
-        },
-    }
-
-
-def process_batch_match_ids(match_ids: List[str], config: dict = None) -> List[dict]:
-    """
-    批量处理比赛ID
-
-    Args:
-        match_ids: 比赛ID列表
-        config: SAX编码配置
-
-    Returns:
-        编码结果列表
-    """
-    results = []
-    for mid in match_ids:
-        print(f"处理比赛: {mid}")
-        result = process_single_match(str(mid).strip(), config)
-        if result:
-            results.append(result)
+            return {
+                "scheduleId": match.get("scheduleId"),
+                "hometeam": match.get("hometeam"),
+                "guestteam": match.get("guestteam"),
+                "matchTime": match_time,
+                "season": match.get("season"),
+                "bookmaker": bookmaker,
+                "sax_interleaved": sax_interleaved,
+                "sax_delta": None,
+                "stats": {
+                    "home_mean": round(float(np.mean(home)), 3),
+                    "draw_mean": round(float(np.mean(draw)), 3),
+                    "away_mean": round(float(np.mean(away)), 3),
+                    "running_odds_count": len(home),
+                },
+            }
         else:
-            print(f"  跳过比赛 {mid}")
-    return results
+            # 使用传统的joint编码 (interleaved + delta)
+            joint_series = create_joint_series(home_norm, draw_norm, away_norm)
+            delta_series = create_delta_series(home_norm, away_norm)
 
+            return {
+                "scheduleId": match.get("scheduleId"),
+                "hometeam": match.get("hometeam"),
+                "guestteam": match.get("guestteam"),
+                "matchTime": match_time,
+                "season": match.get("season"),
+                "bookmaker": bookmaker,
+                "sax_interleaved": encoder.encode(joint_series, 60),
+                "sax_delta": encoder.encode(delta_series, 20),
+                "stats": {
+                    "home_mean": round(float(np.mean(home)), 3),
+                    "draw_mean": round(float(np.mean(draw)), 3),
+                    "away_mean": round(float(np.mean(away)), 3),
+                    "running_odds_count": len(home),
+                },
+            }
 
-def load_config(config_path: str) -> dict:
-    """加载配置文件"""
-    if os.path.exists(config_path):
-        with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    def process_file(self, data_file: str) -> Tuple[Dict[str, List], Dict[str, List]]:
+        """
+        处理单个数据文件
 
+        Returns:
+            (results_individual, results_joint): 分别编码和联合编码结果
+        """
+        print(f"\n处理数据文件: {data_file}")
 
-def save_results(results: List[dict], output_path: str):
-    """保存结果"""
-    os.makedirs(
-        os.path.dirname(output_path) if os.path.dirname(output_path) else ".",
-        exist_ok=True,
-    )
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"结果已保存至: {output_path}")
+        with open(data_file, "r", encoding="utf-8") as f:
+            matches = json.load(f)
+        print(f"  比赛总数: {len(matches)}")
 
+        # 检测文件格式
+        first_match = matches[0] if matches else {}
+        if "bookmakers" in first_match:
+            # 多庄家格式：从每场比赛提取所有庄家
+            bookmakers_in_file = set()
+            for match in matches:
+                for bm in match.get("bookmakers", []):
+                    bookmakers_in_file.add(bm.get("bookmakerName"))
+            print(f"  庄家列表: {sorted(bookmakers_in_file)}")
+        else:
+            # 单庄家格式：从文件名提取
+            filename = os.path.basename(data_file)
+            if "_details.json" in filename:
+                bookmaker = filename.replace("_details.json", "")
+            else:
+                bookmaker = "unknown"
+            bookmakers_in_file = {bookmaker}
+            print(f"  庄家: {bookmaker}")
 
-def print_statistics(results: List[dict]):
-    """打印统计信息"""
-    if not results:
-        print("无结果")
-        return
+        # 初始化结果字典
+        results_individual: Dict[str, List] = {}
+        results_joint: Dict[str, List] = {}
+        for bm in bookmakers_in_file:
+            results_individual[bm] = []
+            results_joint[bm] = []
 
-    print(f"\n{'=' * 60}")
-    print(f"编码结果统计 (共 {len(results)} 场比赛)")
-    print("=" * 60)
+        # 处理每场比赛
+        errors = []
+        for i, match in enumerate(matches):
+            for bookmaker in bookmakers_in_file:
+                # 分别编码
+                result_ind = self.process_match_individual(match, bookmaker)
+                if result_ind:
+                    results_individual[bookmaker].append(result_ind)
 
-    # 交错编码分布
-    interleaved_codes = [r["sax_interleaved"] for r in results]
-    delta_codes = [r["sax_delta"] for r in results]
+                # 联合编码
+                result_joint = self.process_match_joint(match, bookmaker)
+                if result_joint:
+                    results_joint[bookmaker].append(result_joint)
 
-    print(f"\n交错编码分布 (Top 10):")
-    for code, count in Counter(interleaved_codes).most_common(10):
-        print(f"  {code}: {count} 场")
+            if (i + 1) % 500 == 0:
+                print(f"    已处理: {i + 1}/{len(matches)}")
 
-    print(f"\n差值编码分布 (Top 10):")
-    for code, count in Counter(delta_codes).most_common(10):
-        print(f"  {code}: {count} 场")
+        # 打印统计
+        for bookmaker in bookmakers_in_file:
+            print(
+                f"  {bookmaker}: 成功编码 {len(results_individual[bookmaker])} 场比赛"
+            )
+
+        return results_individual, results_joint
+
+    def save_results(
+        self,
+        results_individual: Dict[str, List],
+        results_joint: Dict[str, List],
+        output_dir: str,
+    ):
+        """保存所有结果"""
+        os.makedirs(output_dir, exist_ok=True)
+
+        all_individual_path = os.path.join(output_dir, "all_sax_individual.json")
+        all_joint_path = os.path.join(output_dir, "all_sax_joint.json")
+
+        # 保存汇总文件
+        with open(all_individual_path, "w", encoding="utf-8") as f:
+            json.dump(results_individual, f, ensure_ascii=False, indent=2)
+        print(f"\n分别编码汇总: {all_individual_path}")
+
+        with open(all_joint_path, "w", encoding="utf-8") as f:
+            json.dump(results_joint, f, ensure_ascii=False, indent=2)
+        print(f"联合编码汇总: {all_joint_path}")
+
+        # 保存各庄家独立文件
+        for bookmaker in results_individual:
+            if results_individual[bookmaker]:
+                # 分别编码
+                ind_path = os.path.join(output_dir, f"{bookmaker}_sax_individual.json")
+                with open(ind_path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        results_individual[bookmaker], f, ensure_ascii=False, indent=2
+                    )
+                print(f"  {bookmaker} 分别编码: {ind_path}")
+
+                # 联合编码
+                joint_path = os.path.join(output_dir, f"{bookmaker}_sax_joint.json")
+                with open(joint_path, "w", encoding="utf-8") as f:
+                    json.dump(results_joint[bookmaker], f, ensure_ascii=False, indent=2)
+                print(f"  {bookmaker} 联合编码: {joint_path}")
+
+    def print_statistics(
+        self, results_individual: Dict[str, List], results_joint: Dict[str, List]
+    ):
+        """打印编码统计"""
+        print(f"\n{'=' * 60}")
+        print("编码结果统计")
+        print("=" * 60)
+
+        for bookmaker, results in results_individual.items():
+            if not results:
+                continue
+
+            print(f"\n【{bookmaker}】")
+
+            # 分别编码 - 各类型分布
+            home_counts = Counter(r["sax_home"] for r in results)
+            draw_counts = Counter(r["sax_draw"] for r in results)
+            away_counts = Counter(r["sax_away"] for r in results)
+
+            print(f"分别编码 - 模式分布 (Top 5):")
+            print(f"  主胜 (home): {home_counts.most_common(5)}")
+            print(f"  平局 (draw): {draw_counts.most_common(5)}")
+            print(f"  客胜 (away): {away_counts.most_common(5)}")
+
+            # 联合编码
+            if bookmaker in results_joint and results_joint[bookmaker]:
+                joint_results = results_joint[bookmaker]
+                joint_counts = Counter(r["sax_interleaved"] for r in joint_results)
+                delta_counts = Counter(r["sax_delta"] for r in joint_results)
+
+                print(f"联合编码 - 模式分布 (Top 5):")
+                print(f"  交错拼接: {joint_counts.most_common(5)}")
+                print(f"  差值编码: {delta_counts.most_common(5)}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SAX编码")
-    parser.add_argument("match_ids", nargs="?", help="比赛ID (逗号分隔)")
-    parser.add_argument("--config", "-c", help="配置文件路径")
-    parser.add_argument("--output", "-o", help="输出文件路径")
+    parser = argparse.ArgumentParser(description="多庄家赔率 SAX 编码")
     parser.add_argument(
-        "--batch", "-b", action="store_true", help="批量模式:处理配置文件中所有比赛"
+        "--config-dir",
+        default="./1.generateOddsDetail/SAX encoder/bookmaker_details",
+        help="庄家配置文件目录",
     )
     parser.add_argument(
-        "--word-size", "-w", type=int, default=8, help="word_size (默认8)"
+        "--data-dir",
+        default="./1.generateOddsDetail/SAX encoder/bookmaker_details",
+        help="数据文件目录",
     )
-    parser.add_argument(
-        "--alphabet-size", "-a", type=int, default=4, help="alphabet_size (默认4)"
-    )
-    parser.add_argument(
-        "--interpolate-len", "-i", type=int, default=32, help="interpolate_len (默认32)"
-    )
-
+    parser.add_argument("--output-dir", default="./sax_results", help="输出目录")
+    parser.add_argument("--bookmaker", help="指定只处理单个庄家 (如 bet_365, easybets)")
     args = parser.parse_args()
 
-    # 加载配置
-    config = {}
-    if args.config:
-        config = load_config(args.config)
-
-    # 命令行参数覆盖配置
-    config.setdefault("word_size", args.word_size)
-    config.setdefault("alphabet_size", args.alphabet_size)
-    config.setdefault("interpolate_len", args.interpolate_len)
-
     print("=" * 60)
-    print("SAX 编码 (预处理 + Z-Score标准化)")
+    print("多庄家赔率 SAX 编码")
     print("=" * 60)
-    print(
-        f"配置: word_size={config['word_size']}, alphabet_size={config['alphabet_size']}, interpolate_len={config['interpolate_len']}"
-    )
 
-    # 处理比赛
-    results = []
+    # 初始化处理器
+    processor = MultiBookmakerSAXProcessor(args.config_dir, args.data_dir)
 
-    if args.batch:
-        # 批量模式：从配置文件读取比赛ID
-        if args.config:
-            config_data = load_config(args.config)
-            match_ids = config_data.get("match_ids", [])
-        else:
-            print("错误: 批量模式需要提供配置文件")
-            return
-    elif args.match_ids:
-        # 指定比赛ID
-        match_ids = [m.strip() for m in args.match_ids.split(",")]
-    else:
-        # 默认测试
-        match_ids = ["2789382"]
+    # 加载所有配置
+    processor.load_all_configs()
 
-    print(f"\n处理 {len(match_ids)} 场比赛...")
-    results = process_batch_match_ids(match_ids, config)
+    # 发现数据文件
+    data_files = find_data_files(args.data_dir)
+    if not data_files:
+        print(f"\n错误: 在 {args.data_dir} 目录下找不到 *_details.json 文件")
+        sys.exit(1)
+
+    print(f"\n发现 {len(data_files)} 个数据文件:")
+    for f in data_files:
+        print(f"  - {f}")
+
+    # 过滤指定庄家
+    if args.bookmaker:
+        data_files = [f for f in data_files if args.bookmaker in f]
+        if not data_files:
+            print(f"\n错误: 找不到庄家 {args.bookmaker} 的数据文件")
+            sys.exit(1)
+
+    # 处理所有文件
+    all_individual: Dict[str, List] = {}
+    all_joint: Dict[str, List] = {}
+
+    for data_file in data_files:
+        results_ind, results_joint = processor.process_file(data_file)
+
+        # 合并结果
+        for bm, res in results_ind.items():
+            if bm not in all_individual:
+                all_individual[bm] = []
+            all_individual[bm].extend(res)
+
+        for bm, res in results_joint.items():
+            if bm not in all_joint:
+                all_joint[bm] = []
+            all_joint[bm].extend(res)
 
     # 打印统计
-    print_statistics(results)
+    processor.print_statistics(all_individual, all_joint)
 
     # 保存结果
-    if args.output:
-        save_results(results, args.output)
-    elif results:
-        # 默认保存
-        output_path = (
-            f"sax_results_{match_ids[0]}.json"
-            if len(match_ids) == 1
-            else "sax_results.json"
-        )
-        save_results(results, output_path)
+    processor.save_results(all_individual, all_joint, args.output_dir)
+
+    print(f"\n{'=' * 60}")
+    print("完成!")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
