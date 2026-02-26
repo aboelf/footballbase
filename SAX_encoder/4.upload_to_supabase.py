@@ -17,9 +17,9 @@
 python upload_to_supabase.py --show-schema
 # 复制输出到 Supabase SQL Editor 执行
 # 2. 上传所有庄家的联合编码
-python upload_to_supabase.py --type joint
+python 4.upload_to_supabase.py --type joint
 # 3. 只上传 Easybets 的分别编码
-python upload_to_supabase.py --bookmaker Easybets --type individual
+python 4.upload_to_supabase.py --bookmaker Easybets --type individual
 文件发现测试结果：
 联合编码:
   - Bet 365: sax_results/Bet 365_sax_joint.json
