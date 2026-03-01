@@ -1704,7 +1704,9 @@ def main():
     print("=" * 60)
 
     # 加载 SAX 编码参数（根据庄家加载对应配置文件）
-    config_dir = "SAX_encoder/1.generateOddsDetail/SAX encoder/bookmaker_details"
+    # 使用绝对路径确保无论从哪里运行都能正确找到配置文件
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_dir = os.path.join(script_dir, "1.generateOddsDetail/SAX encoder/bookmaker_details")
     word_size = 8
     alphabet_size = 4
     interpolate_len = 32
