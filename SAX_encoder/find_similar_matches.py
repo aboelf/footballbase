@@ -918,6 +918,83 @@ def encode_handicap_sax(
     }
 
 
+def encode_handicap_sax_advanced(
+    encoder: SAXEncoder,
+    odds_detail_json,
+    interpolate_len: int = 32,
+) -> Optional[dict]:
+    """
+    对亚盘数据进行 SAX 编码（改进版：时间轴对齐 + Z-Score标准化）
+    """
+    from handicap_preprocessing import encode_handicap_sax_v2
+    
+    return encode_handicap_sax_v2(
+        encoder=encoder,
+        odds_detail_json=odds_detail_json,
+        interpolate_len=interpolate_len,
+        word_size=encoder.word_size if hasattr(encoder, 'word_size') else 8,
+    )
+
+
+# ============ 预测功能 ============
+
+
+def parse_handicap(h: str) -> float:
+    """解析亚盘口为数值"""
+    weights = {
+        "受半球": -0.5, "受半球/一球": -0.75, "受一球": -1,
+        "受一球/球半": -1.25, "受球半": -1.5, "受球半/两球": -1.75,
+        "受两球": -2, "平手": 0, "平手/半球": 0.25,
+        "半球": 0.5, "半球/一球": 0.75, "一球": 1,
+        "一球/球半": 1.25, "球半": 1.5, "球半/两球": 1.75, "两球": 2,
+    }
+    return weights.get(str(h).strip(), 0)
+
+
+def extract_handicap_features(init_handicap: str, final_handicap: str, init_odds: float, final_odds: float) -> dict:
+    """提取亚盘特征"""
+    init_val = parse_handicap(init_handicap)
+    final_val = parse_handicap(final_handicap)
+    hc_dir = 1 if final_val > init_val else (-1 if final_val < init_val else 0)
+    water_change = (final_odds - init_odds) if init_odds and final_odds else 0
+    return {"hc_dir": hc_dir, "water_change": water_change, "init_handicap": init_handicap, "final_handicap": final_handicap}
+
+
+def predict_match(features: dict, similar_results: dict = None) -> str:
+    """预测比赛结果"""
+    hc_dir = features.get("hc_dir", 0)
+    water_change = features.get("water_change", 0)
+    if hc_dir == 1:
+        return "主胜"
+    if hc_dir == -1:
+        return "主队不胜"
+    if water_change < -0.1:
+        return "主胜"
+    if water_change > 0.1:
+        return "主队不胜"
+    if similar_results and similar_results.get("home_win_rate", 0) > 0.45:
+        return "主胜"
+    return "主队不胜"
+
+
+def get_prediction_reason(features: dict, similar_results: dict = None) -> str:
+    """获取预测原因"""
+    reasons = []
+    hc_dir = features.get("hc_dir", 0)
+    water_change = features.get("water_change", 0)
+    if hc_dir == 1:
+        reasons.append("升盘")
+    elif hc_dir == -1:
+        reasons.append("降盘")
+    if water_change < -0.1:
+        reasons.append("降水")
+    elif water_change > 0.1:
+        reasons.append("升水")
+    if similar_results:
+        rate = similar_results.get("home_win_rate", 0) * 100
+        reasons.append(f"相似比赛主胜率{rate:.0f}%")
+    return ", ".join(reasons) if reasons else "无明显特征"
+
 def calculate_handicap_distance(
     target_sax: dict,
     item_sax: dict,
@@ -1484,7 +1561,7 @@ def find_similar_matches(
             if odds_detail:
                 # 创建临时 encoder 用于亚盘
                 handicap_encoder = SAXEncoder(word_size=word_size, alphabet_size=alphabet_size)
-                item_handicap_sax = encode_handicap_sax(handicap_encoder, odds_detail)
+                item_handicap_sax = encode_handicap_sax_advanced(handicap_encoder, odds_detail)
             
             if item_handicap_sax:
                 dist_handicap = calculate_handicap_distance(
@@ -1852,6 +1929,7 @@ def main():
     print(f"  编码参数: word_size={word_size}, alphabet_size={alphabet_size}")
 
     # 尝试获取目标比赛的亚盘数据
+    target_handicap_features = {"hc_dir": 0, "water_change": 0, "init_handicap": "", "final_handicap": ""}
     target_handicap_sax = None
     if use_handicap:
         try:
@@ -1859,7 +1937,7 @@ def main():
             # 从数据库获取目标比赛的亚盘数据
             result = (
                 client.table("v_match_odds_sax_handicap")
-                .select("odds_detail")
+                .select("odds_detail, init_handicap, final_handicap, init_odds_home, final_odds_home")
                 .eq("match_id", int(match_id))
                 .eq("bookmaker_name", bookmaker)
                 .execute()
@@ -1874,10 +1952,23 @@ def main():
                         first_item["odds_detail"],
                         interpolate_len * 3
                     )
+                    target_handicap_sax = encode_handicap_sax_advanced(
+                        handicap_encoder, 
+                        first_item["odds_detail"],
+                        interpolate_len * 3
+                    )
                     if target_handicap_sax:
                         print(f"  亚盘编码: {target_handicap_sax['sax_home']}, {target_handicap_sax['sax_away']}, {target_handicap_sax['sax_diff']}")
                         print(f"  亚盘变化次数: {target_handicap_sax['handicap_changes']}")
                         has_handicap_data = True
+                        # 提取亚盘特征用于预测
+                        target_handicap_features = extract_handicap_features(
+                            str(first_item.get("init_handicap", "") or ""),
+                            str(first_item.get("final_handicap", "") or ""),
+                            float(first_item.get("init_odds_home", 0) or 0),
+                            float(first_item.get("final_odds_home", 0) or 0)
+                        )
+                        print(f"  亚盘特征: 盘口方向={target_handicap_features.get('hc_dir', 0)}, 水位变化={target_handicap_features.get('water_change', 0):.2f}")
                     else:
                         print("  警告: 目标比赛亚盘数据不足")
                 else:
@@ -1921,6 +2012,11 @@ def main():
                                     if record.get("bookmaker") == bookmaker_key and record.get("odds_detail"):
                                         handicap_encoder = SAXEncoder(word_size=word_size, alphabet_size=alphabet_size)
                                         target_handicap_sax = encode_handicap_sax(
+                                            handicap_encoder, 
+                                            record["odds_detail"],
+                                            interpolate_len * 3
+                                        )
+                                        target_handicap_sax = encode_handicap_sax_advanced(
                                             handicap_encoder, 
                                             record["odds_detail"],
                                             interpolate_len * 3
@@ -2103,6 +2199,17 @@ def main():
             if win_count + draw_count + loss_count > 0:
                 total = win_count + draw_count + loss_count
                 print(f"         胜率: {win_count/total*100:.1f}%, 平率: {draw_count/total*100:.1f}%, 负率: {loss_count/total*100:.1f}%")
+            else:
+                total = 0
+            
+            # ===== 基于规则的预测 =====
+            similar_results = {"home_win_rate": win_count / total if total > 0 else 0}
+            prediction = predict_match(target_handicap_features, similar_results)
+            reason = get_prediction_reason(target_handicap_features, similar_results)
+            print(f"\n{'='*60}")
+            print(f"预测结果: {prediction}")
+            print(f"预测依据: {reason}")
+            print(f"{'='*60}")
 
     except ValueError as e:
         print(f"\n配置错误: {e}")
